@@ -1,0 +1,77 @@
+name: APK bauen
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # Der Signaturschlüssel liegt nicht im Repo, sondern als Artefakt des letzten Builds
+      # (90 Tage aufbewahrt, bei jedem Build erneuert). Gibt es keinen, wird einmalig einer erzeugt.
+      - name: Signaturschlüssel holen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/signing"
+          RUN_ID=$(gh run list --workflow build.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -n "$RUN_ID" ] && gh run download "$RUN_ID" --name signing-key --dir "$RUNNER_TEMP/signing"; then
+            echo "Vorhandener Schlüssel aus Build $RUN_ID"
+          else
+            echo "Erzeuge neuen Schlüssel"
+            openssl rand -hex 24 > "$RUNNER_TEMP/signing/password.txt"
+            keytool -genkeypair -keystore "$RUNNER_TEMP/signing/release.jks" \
+              -storepass "$(cat "$RUNNER_TEMP/signing/password.txt")" -keypass "$(cat "$RUNNER_TEMP/signing/password.txt")" \
+              -alias pad7 -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=PAD7 Diagnose, C=AT"
+          fi
+          echo "::add-mask::$(cat "$RUNNER_TEMP/signing/password.txt")"
+          echo "SIGNING_STORE_FILE=$RUNNER_TEMP/signing/release.jks" >> "$GITHUB_ENV"
+          echo "SIGNING_PASSWORD=$(cat "$RUNNER_TEMP/signing/password.txt")" >> "$GITHUB_ENV"
+
+      - name: APK bauen
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Signaturschlüssel aufbewahren
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: signing-key
+          path: ${{ runner.temp }}/signing/
+          retention-days: 90
+
+      - name: APK umbenennen
+        run: cp app/build/outputs/apk/release/app-release.apk diagnose.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: diagnose-apk
+          path: diagnose.apk
+
+      # Auf main: als Release "neueste" veröffentlichen, damit der Download-Link immer gleich bleibt.
+      - name: Release veröffentlichen
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete neueste --yes --cleanup-tag || true
+          gh release create neueste diagnose.apk \
+            --title "Diagnose-App (Build ${{ github.run_number }})" \
+            --notes "Auf dem PAD VII in Chrome herunterladen und installieren. Build ${{ github.run_number }}, Commit ${{ github.sha }}."

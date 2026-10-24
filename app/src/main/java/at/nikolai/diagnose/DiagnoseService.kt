@@ -176,7 +176,8 @@ class DiagnoseService : AccessibilityService() {
 
     fun startRecording(name: String, vehicle: String, scanAfter: Boolean, captureEnd: Boolean) {
         recording = Recording(name, vehicle, scanAfter, captureEnd)
-        showPanel("● Aufnahme „$name“: tippe dich jetzt durch die Launch-App.\nTippe hier auf „Fertig“, wenn die Aufzeichnung läuft.",
+        val end = if (captureEnd) "der Scan läuft" else "die Aufzeichnung läuft"
+        showPanel("● Aufnahme „$name“: tippe dich jetzt durch die Launch-App.\nTippe hier auf „Fertig“, sobald $end.",
             "Fertig") { stopRecording() }
         openLaunch()
     }
@@ -215,9 +216,10 @@ class DiagnoseService : AccessibilityService() {
             toast("Keine Schritte aufgenommen")
             return
         }
-        TemplateStore(this).save(
-            Template(System.currentTimeMillis().toString(), rec.name, rec.vehicle, rec.steps, rec.scanAfter, rec.captureEnd)
-        )
+        val t = Template(System.currentTimeMillis().toString(), rec.name, rec.vehicle, rec.steps, rec.scanAfter, rec.captureEnd)
+        TemplateStore(this).save(t)
+        // Schon beim Vormachen das Ergebnis mitnehmen.
+        if (t.captureEnd) waitForResult(t)
         toast("Vorlage „${rec.name}“ mit ${rec.steps.size} Schritten gespeichert")
     }
 
@@ -236,11 +238,49 @@ class DiagnoseService : AccessibilityService() {
                 hidePanel()
                 Analysis.notifyStatus(this, if (ok) "✅ ${t.name}" else "⚠️ ${t.name} angehalten", msg)
                 if (ok && t.scanAfter) ScanWorker.runNow(this)
-                // Ergebnisseite kurz stehen lassen, dann erfassen.
-                if (ok && t.captureEnd) main.postDelayed({ captureNow(auto = false) }, 2500)
+                // Systemscan dauert Minuten: warten, bis die Ergebnisseite steht, dann erfassen.
+                if (ok && t.captureEnd) waitForResult(t)
             })
         openLaunch()
         player?.start()
+    }
+
+    private var waiting: Runnable? = null
+
+    /**
+     * Nach dem letzten Tipp läuft der Scan noch. Alle 2 s den Bildschirm lesen; erfasst wird, sobald er
+     * 12 s unverändert ist und kein „bitte warten“/„scannen“ mehr zeigt. Spätestens nach 15 min.
+     */
+    private fun waitForResult(t: Template) {
+        val started = System.currentTimeMillis()
+        var last = ""
+        var stableSince = started
+        showPanel("⏳ ${t.name}: Scan läuft, ich warte auf das Ergebnis …", "Jetzt erfassen") {
+            waiting?.let { main.removeCallbacks(it) }
+            waiting = null
+            hidePanel()
+            captureNow(auto = false)
+        }
+        val tick = object : Runnable {
+            override fun run() {
+                val text = ScreenReader.format(ScreenReader.collect(rootInActiveWindow))
+                val now = System.currentTimeMillis()
+                if (text != last) { last = text; stableSince = now }
+                val busy = BUSY.containsMatchIn(text)
+                val secs = (now - started) / 1000
+                panel?.text = "⏳ ${t.name}: Scan läuft seit ${secs / 60}:${"%02d".format(secs % 60)} …" +
+                    if (busy) "" else "\nBildschirm ruhig seit ${(now - stableSince) / 1000} s"
+                if ((!busy && now - stableSince >= 12_000) || now - started > 15 * 60_000) {
+                    waiting = null
+                    hidePanel()
+                    captureNow(auto = false)
+                } else {
+                    main.postDelayed(this, 2000)
+                }
+            }
+        }
+        waiting = tick
+        main.postDelayed(tick, 4000)
     }
 
     fun openLaunch() {
@@ -350,9 +390,12 @@ class DiagnoseService : AccessibilityService() {
         if (v != null) runCatching { wm?.removeView(v) }
     }
 
+
     fun toast(msg: String) = main.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
 
     companion object {
+        // Nur eindeutige Warte-Texte; "%" oder "Lade" kämen auch auf der Ergebnisseite vor (Ladezustand).
+        private val BUSY = Regex("bitte warten|please wait|wird gescannt|scanning|wird gelesen|wird geladen|loading", RegexOption.IGNORE_CASE)
         @Volatile
         var instance: DiagnoseService? = null
             private set

@@ -24,6 +24,7 @@ class MainActivity : Activity() {
     private lateinit var setup: LinearLayout
     private lateinit var vehicleButton: android.widget.Button
     private lateinit var programButton: android.widget.Button
+    private lateinit var startButton: android.widget.Button
     private val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.GERMANY)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -38,6 +39,8 @@ class MainActivity : Activity() {
         root.addView(status)
         setup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(setup)
+        startButton = Ui.button(this, "") { startCheck() }.apply { textSize = 22f }
+        root.addView(startButton)
         programButton = Ui.button(this, "") { startActivity(Intent(this, ProgramActivity::class.java)) }
         root.addView(programButton)
         root.addView(Ui.button(this, "▶ Komplett-Check & Messfahrt") { startActivity(Intent(this, TemplatesActivity::class.java)) })
@@ -60,9 +63,47 @@ class MainActivity : Activity() {
         refresh()
     }
 
+    private fun checkTemplate(vehicle: String) =
+        TemplateStore(this).list().filter { it.vehicle == vehicle && it.captureEnd }.maxByOrNull { it.id }
+
+    /** Ein Knopf: Launch öffnen, Fahrzeug wählen, Systemscan, Ergebnis abwarten und erfassen. */
+    private fun startCheck() {
+        val svc = DiagnoseService.instance
+        if (svc == null) {
+            AlertDialog.Builder(this)
+                .setMessage("Dafür muss die Bedienungshilfe „Diagnose“ eingeschaltet sein. Jetzt öffnen?")
+                .setPositiveButton("Öffnen") { _, _ -> Access.openSettings(this) }
+                .setNegativeButton("Später", null).show()
+            return
+        }
+        val vehicle = Prefs(this).vehicle
+        val t = checkTemplate(vehicle)
+        if (t != null) {
+            svc.play(t)
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Einmal vormachen: $vehicle")
+            .setMessage(
+                "Für dieses Fahrzeug kennt die App den Weg noch nicht. Einmal vormachen, danach reicht dieser Knopf.\n\n" +
+                    "1. Die Launch-App öffnet sich, oben steht „● Aufnahme“.\n" +
+                    "2. Tippe dich wie immer durch bis zum Start des Systemscans (Auto-Suche bzw. Marke, Modell, Getriebe …).\n" +
+                    "3. Sobald der Scan läuft, oben auf „Fertig“ tippen.\n\n" +
+                    "Beim nächsten Mal tippt die App das selbst, wartet bis der Scan fertig ist und erfasst das Ergebnis. " +
+                    "Löschen, Codierung und Anpassungen werden nie getippt."
+            )
+            .setPositiveButton("Aufnahme starten") { _, _ ->
+                svc.startRecording("Komplett-Check $vehicle", vehicle, scanAfter = false, captureEnd = true)
+            }
+            .setNegativeButton("Abbrechen", null)
+            .show()
+    }
+
     private fun refresh() {
         val prefs = Prefs(this)
         vehicleButton.text = "🚗 ${prefs.vehicle}  (antippen zum Wechseln)"
+        startButton.text = if (checkTemplate(prefs.vehicle) != null) "▶ START: Komplett-Check ${prefs.vehicle}"
+        else "▶ START: Komplett-Check ${prefs.vehicle} (einmal vormachen)"
         programButton.text = ProgramSession.active(this)?.let { "🛡️ Laufende Prüfung fortsetzen: ${it.program?.name}" }
             ?: "🛡️ Garantie-Check / Gebrauchtwagen-Check"
         val lines = mutableListOf<String>()

@@ -50,6 +50,7 @@ class MainActivity : Activity() {
         })
         root.addView(Ui.button(this, "Datei auswählen und auswerten") { pickFile() })
         root.addView(Ui.button(this, "Einstellungen") { startActivity(Intent(this, SettingsActivity::class.java)) })
+        root.addView(Ui.button(this, "🔄 Nach Update suchen (Version ${Updater.versionName(this)})") { checkUpdate() })
         root.addView(Ui.title(this, "Auswertungen").apply { setPadding(0, Ui.dp(context, 20), 0, 0) })
         list = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(list)
@@ -61,6 +62,44 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         refresh()
+        // Fahrzeug vom Zulassungsschein-Foto im Chat übernehmen.
+        Thread {
+            val name = RemoteVehicle.sync(applicationContext) ?: return@Thread
+            runOnUiThread {
+                refresh()
+                Toast.makeText(this, "🚗 Fahrzeug gewechselt: $name", Toast.LENGTH_LONG).show()
+            }
+        }.start()
+    }
+
+    private fun checkUpdate() {
+        Toast.makeText(this, "Suche nach Update …", Toast.LENGTH_SHORT).show()
+        Thread {
+            val r = Updater.latest()
+            runOnUiThread {
+                when {
+                    r == null -> AlertDialog.Builder(this)
+                        .setMessage("Update-Server nicht erreichbar. Download-Seite im Browser öffnen?")
+                        .setPositiveButton("Öffnen") { _, _ -> Updater.openReleasePage(this) }
+                        .setNegativeButton("Abbrechen", null).show()
+                    r.build <= Updater.currentBuild(this) ->
+                        Toast.makeText(this, "Du hast schon die neueste Version (${Updater.versionName(this)}).", Toast.LENGTH_LONG).show()
+                    !Updater.canInstall(this) -> AlertDialog.Builder(this)
+                        .setMessage("Einmalig: Erlaube der Diagnose-App, Updates zu installieren („Aus dieser Quelle zulassen“). Danach nochmal auf Update tippen.")
+                        .setPositiveButton("Einstellung öffnen") { _, _ -> Updater.openInstallPermission(this) }
+                        .setNegativeButton("Abbrechen", null).show()
+                    else -> {
+                        Toast.makeText(this, "Neue Version 0.1.${r.build} wird geladen …", Toast.LENGTH_LONG).show()
+                        val app = applicationContext
+                        Thread {
+                            runCatching { Updater.downloadAndInstall(app, r) }.onFailure {
+                                Analysis.notifyStatus(app, "⚠️ Update fehlgeschlagen", "${it.message}\nNotfalls über den Link in Chrome installieren.")
+                            }
+                        }.start()
+                    }
+                }
+            }
+        }.start()
     }
 
     private fun checkTemplate(vehicle: String) =

@@ -1,0 +1,3 @@
+# Aktives Fahrzeug der Diagnose-App. Claude trägt es nach einem Zulassungsschein-Foto ein.
+# Erste Zeile ohne # = Fahrzeugname. Datei ist öffentlich: nie FIN, Kennzeichen oder Namen eintragen.
+Ford Galaxy 2023 FHEV

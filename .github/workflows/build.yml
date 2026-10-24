@@ -3,6 +3,8 @@ name: APK bauen
 on:
   push:
     branches: [main]
+    # fahrzeug.txt liest die App direkt; dafür braucht es keine neue APK.
+    paths-ignore: [fahrzeug.txt]
   pull_request:
   workflow_dispatch:
 

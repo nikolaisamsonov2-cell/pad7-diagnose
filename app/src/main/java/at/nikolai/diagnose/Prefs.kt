@@ -59,6 +59,11 @@ class Prefs(context: Context) {
         get() = sp.getString("capture_target", "") ?: ""
         set(value) = sp.edit().putString("capture_target", value).apply()
 
+    /** Zuletzt aus fahrzeug.txt übernommenes Fahrzeug. */
+    var lastRemoteVehicle: String
+        get() = sp.getString("last_remote_vehicle", "") ?: ""
+        set(value) = sp.edit().putString("last_remote_vehicle", value).apply()
+
     var watchEnabled: Boolean
         get() = sp.getBoolean("watch_enabled", true)
         set(value) = sp.edit().putBoolean("watch_enabled", value).apply()

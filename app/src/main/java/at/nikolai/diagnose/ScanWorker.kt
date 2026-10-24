@@ -21,6 +21,7 @@ class ScanWorker(context: Context, params: WorkerParameters) : Worker(context, p
 
     override fun doWork(): Result {
         val prefs = Prefs(applicationContext)
+        RemoteVehicle.sync(applicationContext)?.let { Analysis.notifyStatus(applicationContext, "🚗 Fahrzeug gewechselt", it) }
         if (!Storage.hasAccess(applicationContext)) return Result.success()
 
         val candidates = findCandidates(prefs)

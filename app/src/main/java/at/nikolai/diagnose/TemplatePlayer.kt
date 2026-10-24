@@ -190,6 +190,7 @@ class TemplatePlayer(
     companion object {
         private const val STEP_PAUSE = 1800L
         private const val RETRY_PAUSE = 700L
-        private const val MAX_TRIES = 40
+        // ~90 s je Schritt: Auto-Suche (FIN lesen) und Verbindungsaufbau zum Steuergerät dauern oft länger als eine halbe Minute.
+        private const val MAX_TRIES = 130
     }
 }

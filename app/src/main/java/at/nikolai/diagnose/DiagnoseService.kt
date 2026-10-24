@@ -1,0 +1,338 @@
+package at.nikolai.diagnose
+
+import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.AccessibilityServiceInfo
+import android.annotation.SuppressLint
+import android.graphics.Bitmap
+import android.graphics.PixelFormat
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+import android.view.Display
+import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
+import android.view.WindowManager
+import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
+import android.widget.LinearLayout
+import android.widget.TextView
+import android.widget.Toast
+import androidx.annotation.RequiresApi
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.Executors
+
+/**
+ * Bedienungshilfe "Diagnose":
+ *  - Schwebeknopf über der Launch-App: Bildschirm lesen + Screenshot → Auswertung.
+ *  - Fehlercode-Bildschirme automatisch erfassen.
+ *  - Messfahrt-Vorlagen aufnehmen und abspielen.
+ */
+class DiagnoseService : AccessibilityService() {
+    private val main = Handler(Looper.getMainLooper())
+    private val worker = Executors.newSingleThreadExecutor()
+    private lateinit var prefs: Prefs
+    private var wm: WindowManager? = null
+
+    private var bubble: View? = null
+    private var panel: TextView? = null
+    private var panelWrap: View? = null
+
+    private var foreground = ""
+    private var recording: Recording? = null
+    var player: TemplatePlayer? = null
+        private set
+
+    private class Recording(val name: String, val vehicle: String, val scanAfter: Boolean) {
+        val steps = mutableListOf<Template.Step>()
+    }
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        prefs = Prefs(this)
+        wm = getSystemService(WindowManager::class.java)
+        serviceInfo = serviceInfo.apply {
+            flags = flags or AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS or
+                AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS or
+                AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+        }
+        instance = this
+        showBubble()
+        updateBubbleVisibility()
+    }
+
+    override fun onDestroy() {
+        instance = null
+        player?.cancel()
+        removeView(bubble)
+        removeView(panelWrap)
+        super.onDestroy()
+    }
+
+    override fun onInterrupt() {}
+
+    override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        val pkg = event.packageName?.toString() ?: return
+        when (event.eventType) {
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> {
+                // Systemleiste, Tastatur und unsere eigenen Fenster nicht als Vordergrund-App zählen.
+                if (pkg != packageName && pkg != "com.android.systemui" && !pkg.contains("inputmethod")) {
+                    foreground = pkg
+                    if (prefs.launchPackage.isEmpty() && Prefs.looksLikeLaunch(pkg)) prefs.launchPackage = pkg
+                    updateBubbleVisibility()
+                }
+                if (isLaunch(pkg)) scheduleAutoCheck()
+            }
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> if (isLaunch(pkg)) scheduleAutoCheck()
+            AccessibilityEvent.TYPE_VIEW_CLICKED -> if (isLaunch(pkg)) recordClick(event)
+        }
+        player?.onEvent()
+    }
+
+    fun isLaunch(pkg: String) = pkg.isNotEmpty() && (pkg == prefs.launchPackage || Prefs.looksLikeLaunch(pkg))
+
+    // ---------- Bildschirm erfassen ----------
+
+    fun captureNow(auto: Boolean) {
+        val text = ScreenReader.format(ScreenReader.collect(rootInActiveWindow))
+        val stamp = Handoff.stamp()
+        val inputs = mutableListOf(
+            ClaudeAnalyzer.Input("${ClaudeAnalyzer.SCREEN_PREFIX}$stamp.txt", text.toByteArray()),
+        )
+        toast(if (auto) "Fehlercodes erkannt, wird ausgewertet …" else "Bildschirm erfasst, wird ausgewertet …")
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            bubble?.visibility = View.INVISIBLE
+            main.postDelayed({
+                takeScreenshot(Display.DEFAULT_DISPLAY, worker, object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                        main.post { updateBubbleVisibility() }
+                        val jpeg = runCatching { toJpeg(result) }.getOrNull()
+                        if (jpeg != null) inputs += ClaudeAnalyzer.Input("${ClaudeAnalyzer.SCREEN_PREFIX}$stamp.jpg", jpeg)
+                        Analysis.run(applicationContext, inputs)
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        main.post { updateBubbleVisibility() }
+                        Analysis.run(applicationContext, inputs)
+                    }
+                })
+            }, 150)
+        } else {
+            worker.execute { Analysis.run(applicationContext, inputs) }
+        }
+    }
+
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun toJpeg(result: AccessibilityService.ScreenshotResult): ByteArray {
+        val hw = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
+            ?: error("Screenshot leer")
+        val bmp = hw.copy(Bitmap.Config.ARGB_8888, false)
+        result.hardwareBuffer.close()
+        val scale = minOf(1f, 2000f / maxOf(bmp.width, bmp.height))
+        val out = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
+        return ByteArrayOutputStream().also { out.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+    }
+
+    private val autoCheck = Runnable {
+        if (!prefs.autoCapture || recording != null || player != null) return@Runnable
+        if (!isLaunch(foreground)) return@Runnable
+        val text = ScreenReader.format(ScreenReader.collect(rootInActiveWindow))
+        val codes = ScreenReader.dtcCodes(text)
+        if (codes.isEmpty()) return@Runnable
+        val key = codes.sorted().joinToString(",")
+        val recent = System.currentTimeMillis() - prefs.lastAutoTime < 6 * 3600_000L
+        if (key == prefs.lastAutoCodes && recent) return@Runnable
+        prefs.lastAutoCodes = key
+        captureNow(auto = true)
+    }
+
+    /** Wartet, bis sich der Bildschirm 3 Sekunden lang nicht mehr ändert. */
+    private fun scheduleAutoCheck() {
+        main.removeCallbacks(autoCheck)
+        main.postDelayed(autoCheck, 3000)
+    }
+
+    // ---------- Vorlagen aufnehmen ----------
+
+    fun startRecording(name: String, vehicle: String, scanAfter: Boolean) {
+        recording = Recording(name, vehicle, scanAfter)
+        showPanel("● Aufnahme „$name“: tippe dich jetzt durch die Launch-App.\nTippe hier auf „Fertig“, wenn die Aufzeichnung läuft.",
+            "Fertig") { stopRecording() }
+        openLaunch()
+    }
+
+    private fun recordClick(event: AccessibilityEvent) {
+        val rec = recording ?: return
+        val node = event.source
+        val label = labelOf(event, node)
+        if (label.isEmpty()) {
+            toast("Tipp ohne Beschriftung, wird übersprungen")
+            return
+        }
+        Blocklist.blocked(label)?.let {
+            toast("„$label“ ist gesperrt (enthält „$it“) und wird nicht aufgenommen")
+            return
+        }
+        val checked = if (node?.isCheckable == true || event.isChecked) node?.isChecked ?: event.isChecked else null
+        rec.steps += Template.Step(label, checked, node?.viewIdResourceName)
+        panel?.text = "● Aufnahme „${rec.name}“: ${rec.steps.size} Schritte\nLetzter: $label"
+    }
+
+    private fun labelOf(event: AccessibilityEvent, node: AccessibilityNodeInfo?): String {
+        val direct = event.text.joinToString(" ") { it.toString() }.trim()
+        if (direct.isNotEmpty()) return direct
+        node?.contentDescription?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        // Klickbarer Container ohne eigenen Text: Text der Kinder nehmen.
+        return node?.let { ScreenReader.collect(it).joinToString(" ") { i -> i.text.removePrefix("[x] ").removePrefix("[ ] ") } }
+            ?.trim()?.take(80).orEmpty()
+    }
+
+    private fun stopRecording() {
+        val rec = recording ?: return
+        recording = null
+        hidePanel()
+        if (rec.steps.isEmpty()) {
+            toast("Keine Schritte aufgenommen")
+            return
+        }
+        TemplateStore(this).save(
+            Template(System.currentTimeMillis().toString(), rec.name, rec.vehicle, rec.steps, rec.scanAfter)
+        )
+        toast("Vorlage „${rec.name}“ mit ${rec.steps.size} Schritten gespeichert")
+    }
+
+    // ---------- Vorlagen abspielen ----------
+
+    fun play(t: Template) {
+        if (player != null) {
+            toast("Es läuft schon ein Ablauf")
+            return
+        }
+        showPanel("▶ „${t.name}“ startet …", "Stopp") { player?.cancel() }
+        player = TemplatePlayer(this, t, main,
+            onProgress = { msg -> panel?.text = "▶ ${t.name}\n$msg" },
+            onDone = { ok, msg ->
+                player = null
+                hidePanel()
+                Analysis.notifyStatus(this, if (ok) "✅ ${t.name}" else "⚠️ ${t.name} angehalten", msg)
+                if (ok && t.scanAfter) ScanWorker.runNow(this)
+            })
+        openLaunch()
+        player?.start()
+    }
+
+    fun openLaunch() {
+        val pkg = prefs.launchPackage
+        val intent = if (pkg.isNotEmpty()) packageManager.getLaunchIntentForPackage(pkg) else null
+        if (intent == null) {
+            toast("Launch-App bitte selbst öffnen")
+            return
+        }
+        intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+        startActivity(intent)
+    }
+
+    // ---------- Schwebeknopf und Statusleiste ----------
+
+    private fun overlayParams(w: Int, h: Int) = WindowManager.LayoutParams(
+        w, h,
+        WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY,
+        WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
+        PixelFormat.TRANSLUCENT,
+    )
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun showBubble() {
+        val size = Ui.dp(this, 64)
+        val v = TextView(this).apply {
+            text = "🔍"
+            textSize = 28f
+            gravity = Gravity.CENTER
+            setBackgroundResource(R.drawable.bubble)
+            contentDescription = "Diagnose: Bildschirm auswerten"
+        }
+        val lp = overlayParams(size, size).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = resources.displayMetrics.widthPixels - size - Ui.dp(this@DiagnoseService, 16)
+            y = resources.displayMetrics.heightPixels / 3
+        }
+        var downX = 0f
+        var downY = 0f
+        var startX = 0
+        var startY = 0
+        var moved = false
+        v.setOnTouchListener { view, e ->
+            when (e.action) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y; moved = false
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = (e.rawX - downX).toInt()
+                    val dy = (e.rawY - downY).toInt()
+                    if (kotlin.math.abs(dx) + kotlin.math.abs(dy) > 20) moved = true
+                    if (moved) {
+                        lp.x = startX + dx; lp.y = startY + dy
+                        wm?.updateViewLayout(view, lp)
+                    }
+                }
+                MotionEvent.ACTION_UP -> if (!moved) captureNow(auto = false)
+            }
+            true
+        }
+        runCatching { wm?.addView(v, lp) }.onSuccess { bubble = v }
+    }
+
+    private fun updateBubbleVisibility() {
+        val show = isLaunch(foreground) && recording == null && player == null
+        bubble?.visibility = if (show) View.VISIBLE else View.GONE
+    }
+
+    private fun showPanel(text: String, button: String, onButton: () -> Unit) {
+        hidePanel()
+        val p = Ui.dp(this, 12)
+        val label = TextView(this).apply {
+            this.text = text
+            textSize = 16f
+            setTextColor(0xFFFFFFFF.toInt())
+        }
+        val btn = TextView(this).apply {
+            this.text = button
+            textSize = 18f
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(0xFFC62828.toInt())
+            setPadding(p * 2, p, p * 2, p)
+            setOnClickListener { onButton() }
+        }
+        val wrap = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            setBackgroundColor(0xE6212121.toInt())
+            setPadding(p, p, p, p)
+            addView(label, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(btn)
+        }
+        val lp = overlayParams(WindowManager.LayoutParams.MATCH_PARENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            .apply { gravity = Gravity.TOP }
+        runCatching { wm?.addView(wrap, lp) }.onSuccess { panelWrap = wrap; panel = label }
+        updateBubbleVisibility()
+    }
+
+    private fun hidePanel() {
+        removeView(panelWrap)
+        panelWrap = null
+        panel = null
+        updateBubbleVisibility()
+    }
+
+    private fun removeView(v: View?) {
+        if (v != null) runCatching { wm?.removeView(v) }
+    }
+
+    fun toast(msg: String) = main.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+
+    companion object {
+        @Volatile
+        var instance: DiagnoseService? = null
+            private set
+    }
+}

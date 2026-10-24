@@ -30,7 +30,10 @@ class ClaudeAnalyzer(private val apiKey: String, private val vehicle: String) {
 
     data class Input(val fileName: String, val bytes: ByteArray)
 
-    fun analyze(input: Input): String {
+    fun analyze(input: Input): String = analyze(listOf(input))
+
+    /** Mehrere Dateien gehören zu einem Befund, z. B. Bildschirmtext plus Screenshot vom Diagnose-Knopf. */
+    fun analyze(inputs: List<Input>): String {
         if (apiKey.isBlank()) {
             throw AnalysisException("Kein API-Schlüssel eingetragen. Bitte unter Einstellungen eintragen.")
         }
@@ -40,11 +43,15 @@ class ClaudeAnalyzer(private val apiKey: String, private val vehicle: String) {
             .maxRetries(3)
             .build()
 
-        val (fileBlock, note) = buildFileBlock(input)
+        val blocks = inputs.map { buildFileBlock(it) }
         val instruction = buildString {
-            append("Datei: ").append(input.fileName).append('\n')
-            if (note != null) append(note).append('\n')
-            append("Werte diesen Bericht des Launch X-431 PAD VII aus.")
+            append("Dateien: ").append(inputs.joinToString { it.fileName }).append('\n')
+            blocks.mapNotNull { it.second }.forEach { append(it).append('\n') }
+            if (inputs.any { it.fileName.startsWith(SCREEN_PREFIX) }) {
+                append("Das ist ein Bildschirm der Launch-App, ausgelesen per Diagnose-Knopf ")
+                append("(Bildschirmtext und, falls vorhanden, Screenshot desselben Moments).\n")
+            }
+            append("Werte das aus.")
         }
 
         val params = MessageCreateParams.builder()
@@ -56,7 +63,7 @@ class ClaudeAnalyzer(private val apiKey: String, private val vehicle: String) {
             .putAdditionalHeader("anthropic-beta", "server-side-fallback-2026-07-01")
             .putAdditionalBodyProperty("fallbacks", JsonValue.from("default"))
             .addUserMessageOfContentBlockParams(
-                listOf(fileBlock, ContentBlockParam.ofText(TextBlockParam.builder().text(instruction).build()))
+                blocks.map { it.first } + ContentBlockParam.ofText(TextBlockParam.builder().text(instruction).build())
             )
             .build()
 
@@ -161,6 +168,7 @@ class ClaudeAnalyzer(private val apiKey: String, private val vehicle: String) {
 
     companion object {
         const val MODEL = "claude-opus-5-5"
+        const val SCREEN_PREFIX = "Bildschirm_"
         private const val MAX_TEXT_CHARS = 600_000
 
         fun systemPrompt(vehicle: String) = """

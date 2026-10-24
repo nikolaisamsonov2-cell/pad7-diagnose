@@ -27,9 +27,13 @@ class SettingsActivity : Activity() {
         }
         root.addView(key)
 
-        root.addView(Ui.text(this, "Standardfahrzeug (wenn der Bericht keins nennt)", 15f))
-        val vehicle = EditText(this).apply { setText(prefs.vehicle) }
-        root.addView(vehicle)
+        root.addView(Ui.text(this, "Fahrzeuge (eins pro Zeile). Das aktive wählst du auf der Startseite.", 15f))
+        val vehicles = EditText(this).apply {
+            setText(prefs.vehicles.joinToString("\n"))
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_MULTI_LINE
+            minLines = 2
+        }
+        root.addView(vehicles)
 
         root.addView(Ui.text(this, "Überwachte Ordner (mehrere mit Komma trennen)", 15f))
         val folders = EditText(this).apply { setText(prefs.watchFolders) }
@@ -42,9 +46,25 @@ class SettingsActivity : Activity() {
         }
         root.addView(watch)
 
+        val auto = CheckBox(this).apply {
+            text = "Fehlercode-Bildschirme der Launch-App automatisch erfassen"
+            textSize = 16f
+            isChecked = prefs.autoCapture
+        }
+        root.addView(auto)
+
+        root.addView(Ui.text(this, "Übergabeordner ohne API-Schlüssel (wird von DriveSync nach Drive „Diagnose“ hochgeladen)", 15f))
+        val handoff = EditText(this).apply { setText(prefs.handoffFolder) }
+        root.addView(handoff)
+
         root.addView(Ui.button(this, "Speichern") {
             prefs.apiKey = key.text.toString()
-            prefs.vehicle = vehicle.text.toString().ifBlank { Prefs.DEFAULT_VEHICLE }
+            val list = vehicles.text.toString().lines().map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+                .ifEmpty { listOf(Prefs.DEFAULT_VEHICLE) }
+            prefs.vehicles = list
+            if (prefs.vehicle !in list) prefs.vehicle = list.first()
+            prefs.autoCapture = auto.isChecked
+            prefs.handoffFolder = handoff.text.toString().ifBlank { Prefs.defaultHandoff() }
             prefs.watchFolders = folders.text.toString().ifBlank { Prefs.defaultFolders() }
             prefs.watchEnabled = watch.isChecked
             ScanWorker.schedule(this)

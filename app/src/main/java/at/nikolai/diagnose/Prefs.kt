@@ -22,6 +22,33 @@ class Prefs(context: Context) {
         get() = sp.getString("watch_folders", defaultFolders()) ?: defaultFolders()
         set(value) = sp.edit().putString("watch_folders", value.trim()).apply()
 
+    /** Alle bekannten Fahrzeuge, eins pro Zeile. Das aktive steht in [vehicle]. */
+    var vehicles: List<String>
+        get() = (sp.getString("vehicles", null) ?: DEFAULT_VEHICLE).lines().map { it.trim() }.filter { it.isNotEmpty() }
+        set(value) = sp.edit().putString("vehicles", value.joinToString("\n")).apply()
+
+    /** Ohne API-Schlüssel landen Dateien hier; DriveSync lädt diesen Ordner nach Drive "Diagnose" hoch. */
+    var handoffFolder: String
+        get() = sp.getString("handoff_folder", defaultHandoff()) ?: defaultHandoff()
+        set(value) = sp.edit().putString("handoff_folder", value.trim()).apply()
+
+    /** Fehlercode-Bildschirme der Launch-App automatisch erfassen. */
+    var autoCapture: Boolean
+        get() = sp.getBoolean("auto_capture", true)
+        set(value) = sp.edit().putBoolean("auto_capture", value).apply()
+
+    /** Paketname der Launch-App, wird beim ersten Öffnen erkannt. */
+    var launchPackage: String
+        get() = sp.getString("launch_package", "") ?: ""
+        set(value) = sp.edit().putString("launch_package", value).apply()
+
+    /** Zuletzt automatisch erfasste Fehlercodes und Zeitpunkt, um Doppelte zu vermeiden. */
+    var lastAutoCodes: String
+        get() = sp.getString("last_auto_codes", "") ?: ""
+        set(value) = sp.edit().putString("last_auto_codes", value).putLong("last_auto_time", System.currentTimeMillis()).apply()
+
+    val lastAutoTime: Long get() = sp.getLong("last_auto_time", 0L)
+
     var watchEnabled: Boolean
         get() = sp.getBoolean("watch_enabled", true)
         set(value) = sp.edit().putBoolean("watch_enabled", value).apply()
@@ -53,6 +80,17 @@ class Prefs(context: Context) {
         fun defaultFolders(): String {
             val root = Environment.getExternalStorageDirectory().absolutePath
             return "$root/CNLAUNCH"
+        }
+
+        fun defaultHandoff(): String {
+            val root = Environment.getExternalStorageDirectory().absolutePath
+            return "$root/CNLAUNCH/X431PADVII/images"
+        }
+
+        /** Sieht der Paketname nach der Launch-Diagnose-App aus? */
+        fun looksLikeLaunch(pkg: String): Boolean {
+            val p = pkg.lowercase()
+            return "cnlaunch" in p || "x431" in p || p.startsWith("com.launch")
         }
     }
 }

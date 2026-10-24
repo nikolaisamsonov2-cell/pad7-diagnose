@@ -21,6 +21,8 @@ import java.util.Locale
 class MainActivity : Activity() {
     private lateinit var status: TextView
     private lateinit var list: LinearLayout
+    private lateinit var setup: LinearLayout
+    private lateinit var vehicleButton: android.widget.Button
     private val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.GERMANY)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -29,8 +31,13 @@ class MainActivity : Activity() {
 
         val root = Ui.column(this)
         root.addView(Ui.title(this, "Diagnose"))
+        vehicleButton = Ui.button(this, "") { chooseVehicle() }
+        root.addView(vehicleButton)
         status = Ui.text(this, "", 15f)
         root.addView(status)
+        setup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        root.addView(setup)
+        root.addView(Ui.button(this, "▶ Messfahrt-Vorlagen") { startActivity(Intent(this, TemplatesActivity::class.java)) })
         root.addView(Ui.button(this, "Jetzt nach neuen Berichten suchen") {
             ScanWorker.runNow(this)
             Toast.makeText(this, "Suche läuft, Ergebnis kommt als Benachrichtigung.", Toast.LENGTH_LONG).show()
@@ -52,9 +59,19 @@ class MainActivity : Activity() {
 
     private fun refresh() {
         val prefs = Prefs(this)
+        vehicleButton.text = "🚗 ${prefs.vehicle}  (antippen zum Wechseln)"
         val lines = mutableListOf<String>()
-        if (prefs.apiKey.isBlank()) lines += "⚠️ Noch kein API-Schlüssel. Bitte unter Einstellungen eintragen."
-        if (!Storage.hasAccess(this)) lines += "⚠️ Kein Dateizugriff. Unter Einstellungen erlauben, damit neue Berichte automatisch erkannt werden."
+        lines += if (prefs.apiKey.isBlank()) "Ohne API-Schlüssel: Berichte gehen über Google Drive an das Claude-Projekt."
+        else "Auswertung direkt hier am Tablet."
+        setup.removeAllViews()
+        if (!Storage.hasAccess(this)) {
+            setup.addView(Ui.button(this, "⚠️ Schritt 1: Dateizugriff erlauben") { Storage.request(this) })
+        }
+        if (!Access.isEnabled(this)) {
+            setup.addView(Ui.button(this, "⚠️ Schritt 2: Bedienungshilfe „Diagnose“ einschalten") { explainAccess() })
+        } else {
+            lines += "🔍-Knopf ist über der Launch-App aktiv" + if (prefs.autoCapture) ", Fehlercodes werden automatisch erfasst." else "."
+        }
         if (prefs.watchEnabled) {
             lines += "Überwacht: ${prefs.watchFolders}"
             lines += if (prefs.lastScan > 0) "Zuletzt geprüft: ${fmt.format(Date(prefs.lastScan))}" else "Noch nicht geprüft."
@@ -90,6 +107,50 @@ class MainActivity : Activity() {
             }
             list.addView(wrap)
         }
+    }
+
+    private fun chooseVehicle() {
+        val prefs = Prefs(this)
+        val all = prefs.vehicles
+        val items = (all + "➕ Neues Fahrzeug …").toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("Welches Fahrzeug?")
+            .setItems(items) { _, which ->
+                if (which < all.size) {
+                    prefs.vehicle = all[which]
+                    refresh()
+                } else {
+                    val input = android.widget.EditText(this).apply { hint = "z. B. Toyota Corolla 2021 Hybrid" }
+                    AlertDialog.Builder(this)
+                        .setTitle("Neues Fahrzeug")
+                        .setView(input)
+                        .setPositiveButton("Hinzufügen") { _, _ ->
+                            val v = input.text.toString().trim()
+                            if (v.isNotEmpty()) {
+                                prefs.vehicles = (all + v).distinct()
+                                prefs.vehicle = v
+                                refresh()
+                            }
+                        }
+                        .setNegativeButton("Abbrechen", null)
+                        .show()
+                }
+            }
+            .show()
+    }
+
+    private fun explainAccess() {
+        AlertDialog.Builder(this)
+            .setTitle("Bedienungshilfe einschalten")
+            .setMessage(
+                "In der folgenden Liste „Diagnose“ antippen und einschalten.\n\n" +
+                    "Android warnt, dass die App den Bildschirm sehen und bedienen kann. Das braucht sie für den 🔍-Knopf " +
+                    "und die Messfahrt-Vorlagen. Sie liest nur die Launch-App und tippt nie auf Löschen, Codierung, " +
+                    "Anpassung oder Stellgliedtests."
+            )
+            .setPositiveButton("Weiter") { _, _ -> Access.openSettings(this) }
+            .setNegativeButton("Später", null)
+            .show()
     }
 
     private fun pickFile() {

@@ -42,10 +42,12 @@ object Analysis {
                         "nach Google Drive „Diagnose“ hochgeladen. Die Auswertung kommt dann im Claude-Projekt.\n\n" +
                         written.joinToString("\n") { it.absolutePath },
                     null,
+                    prefs.vehicle,
                 )
             } else {
-                val text = ClaudeAnalyzer(prefs.apiKey, prefs.vehicle).analyze(inputs)
-                store.save(label, text, null)
+                val history = store.history(prefs.vehicle, 3)
+                val text = ClaudeAnalyzer(prefs.apiKey, prefs.vehicle).analyze(inputs, history)
+                store.save(label, text, null, prefs.vehicle)
             }
         } catch (e: ClaudeAnalyzer.AnalysisException) {
             store.save(label, "", e.message)

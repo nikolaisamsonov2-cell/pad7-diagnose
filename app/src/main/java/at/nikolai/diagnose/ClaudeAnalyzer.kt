@@ -33,7 +33,7 @@ class ClaudeAnalyzer(private val apiKey: String, private val vehicle: String) {
     fun analyze(input: Input): String = analyze(listOf(input))
 
     /** Mehrere Dateien gehören zu einem Befund, z. B. Bildschirmtext plus Screenshot vom Diagnose-Knopf. */
-    fun analyze(inputs: List<Input>): String {
+    fun analyze(inputs: List<Input>, history: List<ReportStore.Result> = emptyList()): String {
         if (apiKey.isBlank()) {
             throw AnalysisException("Kein API-Schlüssel eingetragen. Bitte unter Einstellungen eintragen.")
         }
@@ -50,6 +50,16 @@ class ClaudeAnalyzer(private val apiKey: String, private val vehicle: String) {
             if (inputs.any { it.fileName.startsWith(SCREEN_PREFIX) }) {
                 append("Das ist ein Bildschirm der Launch-App, ausgelesen per Diagnose-Knopf ")
                 append("(Bildschirmtext und, falls vorhanden, Screenshot desselben Moments).\n")
+            }
+            if (history.isNotEmpty()) {
+                append("\nFrühere Auswertungen dieses Fahrzeugs (neueste zuerst) zum Vergleich:\n")
+                val fmt = java.text.SimpleDateFormat("dd.MM.yyyy", java.util.Locale.GERMANY)
+                history.forEach { h ->
+                    append("--- ").append(fmt.format(java.util.Date(h.createdAt))).append(" ---\n")
+                    append(h.text.take(4000)).append('\n')
+                }
+                append("Nenne im Abschnitt KURZ ausdrücklich, was sich seit der letzten Auswertung geändert hat ")
+                append("(neue, verschwundene oder wiederkehrende Codes, Trends bei Messwerten).\n")
             }
             append("Werte das aus.")
         }

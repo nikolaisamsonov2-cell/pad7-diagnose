@@ -37,7 +37,7 @@ class MainActivity : Activity() {
         root.addView(status)
         setup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(setup)
-        root.addView(Ui.button(this, "▶ Messfahrt-Vorlagen") { startActivity(Intent(this, TemplatesActivity::class.java)) })
+        root.addView(Ui.button(this, "▶ Komplett-Check & Messfahrt") { startActivity(Intent(this, TemplatesActivity::class.java)) })
         root.addView(Ui.button(this, "Jetzt nach neuen Berichten suchen") {
             ScanWorker.runNow(this)
             Toast.makeText(this, "Suche läuft, Ergebnis kommt als Benachrichtigung.", Toast.LENGTH_LONG).show()

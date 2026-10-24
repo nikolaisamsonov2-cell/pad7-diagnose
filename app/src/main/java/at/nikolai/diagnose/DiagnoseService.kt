@@ -43,7 +43,7 @@ class DiagnoseService : AccessibilityService() {
     var player: TemplatePlayer? = null
         private set
 
-    private class Recording(val name: String, val vehicle: String, val scanAfter: Boolean) {
+    private class Recording(val name: String, val vehicle: String, val scanAfter: Boolean, val captureEnd: Boolean) {
         val steps = mutableListOf<Template.Step>()
     }
 
@@ -154,8 +154,8 @@ class DiagnoseService : AccessibilityService() {
 
     // ---------- Vorlagen aufnehmen ----------
 
-    fun startRecording(name: String, vehicle: String, scanAfter: Boolean) {
-        recording = Recording(name, vehicle, scanAfter)
+    fun startRecording(name: String, vehicle: String, scanAfter: Boolean, captureEnd: Boolean) {
+        recording = Recording(name, vehicle, scanAfter, captureEnd)
         showPanel("● Aufnahme „$name“: tippe dich jetzt durch die Launch-App.\nTippe hier auf „Fertig“, wenn die Aufzeichnung läuft.",
             "Fertig") { stopRecording() }
         openLaunch()
@@ -196,7 +196,7 @@ class DiagnoseService : AccessibilityService() {
             return
         }
         TemplateStore(this).save(
-            Template(System.currentTimeMillis().toString(), rec.name, rec.vehicle, rec.steps, rec.scanAfter)
+            Template(System.currentTimeMillis().toString(), rec.name, rec.vehicle, rec.steps, rec.scanAfter, rec.captureEnd)
         )
         toast("Vorlage „${rec.name}“ mit ${rec.steps.size} Schritten gespeichert")
     }
@@ -216,6 +216,8 @@ class DiagnoseService : AccessibilityService() {
                 hidePanel()
                 Analysis.notifyStatus(this, if (ok) "✅ ${t.name}" else "⚠️ ${t.name} angehalten", msg)
                 if (ok && t.scanAfter) ScanWorker.runNow(this)
+                // Ergebnisseite kurz stehen lassen, dann erfassen.
+                if (ok && t.captureEnd) main.postDelayed({ captureNow(auto = false) }, 2500)
             })
         openLaunch()
         player?.start()

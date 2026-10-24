@@ -14,6 +14,7 @@ class ReportStore(context: Context) {
         val createdAt: Long,
         val text: String,
         val error: String?,
+        val vehicle: String = "",
     ) {
         /** Erste Zeile "TITEL: ..." aus der Antwort, sonst der Dateiname. */
         val title: String
@@ -29,12 +30,12 @@ class ReportStore(context: Context) {
                 }
     }
 
-    fun save(fileName: String, text: String, error: String?): Result {
+    fun save(fileName: String, text: String, error: String?, vehicle: String = ""): Result {
         val now = System.currentTimeMillis()
-        val r = Result(now.toString(), fileName, now, text, error)
+        val r = Result(now.toString(), fileName, now, text, error, vehicle)
         val json = JSONObject()
             .put("id", r.id).put("fileName", fileName).put("createdAt", now)
-            .put("text", text).put("error", error ?: JSONObject.NULL)
+            .put("text", text).put("error", error ?: JSONObject.NULL).put("vehicle", vehicle)
         File(dir, "${r.id}.json").writeText(json.toString())
         return r
     }
@@ -43,6 +44,10 @@ class ReportStore(context: Context) {
         dir.listFiles { f -> f.name.endsWith(".json") }.orEmpty()
             .mapNotNull { runCatching { parse(it.readText()) }.getOrNull() }
             .sortedByDescending { it.createdAt }
+
+    /** Frühere erfolgreiche Claude-Auswertungen desselben Fahrzeugs, neueste zuerst. */
+    fun history(vehicle: String, limit: Int): List<Result> =
+        list().filter { it.vehicle == vehicle && it.error == null && it.ampel != null }.take(limit)
 
     fun get(id: String): Result? = File(dir, "$id.json").takeIf { it.exists() }?.let { parse(it.readText()) }
 
@@ -55,6 +60,7 @@ class ReportStore(context: Context) {
         return Result(
             o.getString("id"), o.getString("fileName"), o.getLong("createdAt"), o.optString("text"),
             if (o.isNull("error")) null else o.getString("error"),
+            o.optString("vehicle"),
         )
     }
 }

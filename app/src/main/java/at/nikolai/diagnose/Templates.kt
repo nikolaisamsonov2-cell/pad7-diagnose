@@ -16,6 +16,8 @@ data class Template(
     val steps: List<Step>,
     /** Nach dem Ablauf neue Dateien suchen und auswerten (z. B. Vorlage "Messfahrt beenden" mit CSV-Export). */
     val scanAfter: Boolean,
+    /** Am Ende den Bildschirm erfassen und auswerten (Komplett-Check: Ergebnisseite des Systemscans). */
+    val captureEnd: Boolean = false,
 ) {
     data class Step(
         val label: String,
@@ -25,7 +27,7 @@ data class Template(
     )
 
     fun toJson(): JSONObject = JSONObject()
-        .put("id", id).put("name", name).put("vehicle", vehicle).put("scanAfter", scanAfter)
+        .put("id", id).put("name", name).put("vehicle", vehicle).put("scanAfter", scanAfter).put("captureEnd", captureEnd)
         .put("steps", JSONArray().apply {
             steps.forEach { s ->
                 put(JSONObject().put("label", s.label)
@@ -45,7 +47,7 @@ data class Template(
                     if (s.isNull("viewId")) null else s.getString("viewId"),
                 )
             }
-            return Template(o.getString("id"), o.getString("name"), o.optString("vehicle"), steps, o.optBoolean("scanAfter"))
+            return Template(o.getString("id"), o.getString("name"), o.optString("vehicle"), steps, o.optBoolean("scanAfter"), o.optBoolean("captureEnd"))
         }
     }
 }

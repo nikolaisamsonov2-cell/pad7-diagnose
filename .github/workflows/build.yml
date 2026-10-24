@@ -63,6 +63,8 @@ jobs:
         with:
           name: diagnose-apk
           path: diagnose.apk
+          # Kurz halten: Der Gratis-Speicher für Artefakte ist auf 500 MB begrenzt; die APK liegt dauerhaft im Release.
+          retention-days: 3
 
       # Auf main: als Release "neueste" veröffentlichen, damit der Download-Link immer gleich bleibt.
       - name: Release veröffentlichen

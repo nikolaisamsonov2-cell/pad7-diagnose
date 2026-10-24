@@ -49,6 +49,16 @@ class Prefs(context: Context) {
 
     val lastAutoTime: Long get() = sp.getLong("last_auto_time", 0L)
 
+    /** Laufende Prüfung (Garantie-/Gebrauchtwagen-Check). */
+    var activeSession: String
+        get() = sp.getString("active_session", "") ?: ""
+        set(value) = sp.edit().putString("active_session", value).apply()
+
+    /** Prüfpunkt, dem der nächste 🔍-Druck zugeordnet wird. */
+    var captureTarget: String
+        get() = sp.getString("capture_target", "") ?: ""
+        set(value) = sp.edit().putString("capture_target", value).apply()
+
     var watchEnabled: Boolean
         get() = sp.getBoolean("watch_enabled", true)
         set(value) = sp.edit().putBoolean("watch_enabled", value).apply()

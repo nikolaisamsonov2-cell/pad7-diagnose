@@ -23,6 +23,7 @@ class MainActivity : Activity() {
     private lateinit var list: LinearLayout
     private lateinit var setup: LinearLayout
     private lateinit var vehicleButton: android.widget.Button
+    private lateinit var programButton: android.widget.Button
     private val fmt = SimpleDateFormat("dd.MM.yyyy HH:mm", Locale.GERMANY)
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,6 +38,8 @@ class MainActivity : Activity() {
         root.addView(status)
         setup = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(setup)
+        programButton = Ui.button(this, "") { startActivity(Intent(this, ProgramActivity::class.java)) }
+        root.addView(programButton)
         root.addView(Ui.button(this, "▶ Komplett-Check & Messfahrt") { startActivity(Intent(this, TemplatesActivity::class.java)) })
         root.addView(Ui.button(this, "Jetzt nach neuen Berichten suchen") {
             ScanWorker.runNow(this)
@@ -60,6 +63,8 @@ class MainActivity : Activity() {
     private fun refresh() {
         val prefs = Prefs(this)
         vehicleButton.text = "🚗 ${prefs.vehicle}  (antippen zum Wechseln)"
+        programButton.text = ProgramSession.active(this)?.let { "🛡️ Laufende Prüfung fortsetzen: ${it.program?.name}" }
+            ?: "🛡️ Garantie-Check / Gebrauchtwagen-Check"
         val lines = mutableListOf<String>()
         lines += if (prefs.apiKey.isBlank()) "Ohne API-Schlüssel: Berichte gehen über Google Drive an das Claude-Projekt."
         else "Auswertung direkt hier am Tablet."

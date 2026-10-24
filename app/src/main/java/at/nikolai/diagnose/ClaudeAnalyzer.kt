@@ -33,7 +33,11 @@ class ClaudeAnalyzer(private val apiKey: String, private val vehicle: String) {
     fun analyze(input: Input): String = analyze(listOf(input))
 
     /** Mehrere Dateien gehören zu einem Befund, z. B. Bildschirmtext plus Screenshot vom Diagnose-Knopf. */
-    fun analyze(inputs: List<Input>, history: List<ReportStore.Result> = emptyList()): String {
+    fun analyze(
+        inputs: List<Input>,
+        history: List<ReportStore.Result> = emptyList(),
+        focus: String? = null,
+    ): String {
         if (apiKey.isBlank()) {
             throw AnalysisException("Kein API-Schlüssel eingetragen. Bitte unter Einstellungen eintragen.")
         }
@@ -67,7 +71,7 @@ class ClaudeAnalyzer(private val apiKey: String, private val vehicle: String) {
         val params = MessageCreateParams.builder()
             .model(MODEL)
             .maxTokens(16000L)
-            .system(systemPrompt(vehicle))
+            .system(if (focus == null) systemPrompt(vehicle) else systemPrompt(vehicle) + "\n\n" + focus)
             .outputConfig(OutputConfig.builder().effort(OutputConfig.Effort.HIGH).build())
             // Bei einer Ablehnung wählt der Server selbst ein Ersatzmodell.
             .putAdditionalHeader("anthropic-beta", "server-side-fallback-2026-07-01")

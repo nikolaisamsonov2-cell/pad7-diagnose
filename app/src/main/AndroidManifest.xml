@@ -65,6 +65,7 @@
 
         <activity android:name=".ResultActivity" />
         <activity android:name=".TemplatesActivity" />
+        <activity android:name=".ProgramActivity" />
         <activity android:name=".SettingsActivity" />
     </application>
 </manifest>

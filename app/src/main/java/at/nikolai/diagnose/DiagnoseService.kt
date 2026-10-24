@@ -99,7 +99,27 @@ class DiagnoseService : AccessibilityService() {
         val inputs = mutableListOf(
             ClaudeAnalyzer.Input("${ClaudeAnalyzer.SCREEN_PREFIX}$stamp.txt", text.toByteArray()),
         )
-        toast(if (auto) "Fehlercodes erkannt, wird ausgewertet …" else "Bildschirm erfasst, wird ausgewertet …")
+        // Während einer Prüfung wird jeder Bildschirm als Beleg zum gewählten Punkt gespeichert statt einzeln ausgewertet.
+        val session = ProgramSession.active(this)
+        val itemId = session?.let { s ->
+            prefs.captureTarget.takeIf { t -> s.program?.items?.any { it.id == t } == true } ?: if (auto) "dtc" else null
+        }
+        val itemTitle = session?.program?.items?.firstOrNull { it.id == itemId }?.title
+        val deliver: (List<ClaudeAnalyzer.Input>) -> Unit = if (session != null && itemId != null) {
+            { list ->
+                list.forEach { session.addFile(itemId, it.fileName, it.bytes) }
+                toast("Beleg gespeichert: $itemTitle (${session.files(itemId).count { it.name.endsWith(".txt") }})")
+            }
+        } else {
+            { list -> Analysis.run(applicationContext, list) }
+        }
+        if (session != null && itemId == null) {
+            toast("Prüfung läuft: bitte in der Diagnose-App zuerst einen Prüfpunkt antippen")
+            return
+        }
+        if (session == null) {
+            toast(if (auto) "Fehlercodes erkannt, wird ausgewertet …" else "Bildschirm erfasst, wird ausgewertet …")
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             bubble?.visibility = View.INVISIBLE
             main.postDelayed({
@@ -108,17 +128,17 @@ class DiagnoseService : AccessibilityService() {
                         main.post { updateBubbleVisibility() }
                         val jpeg = runCatching { toJpeg(result) }.getOrNull()
                         if (jpeg != null) inputs += ClaudeAnalyzer.Input("${ClaudeAnalyzer.SCREEN_PREFIX}$stamp.jpg", jpeg)
-                        Analysis.run(applicationContext, inputs)
+                        deliver(inputs)
                     }
 
                     override fun onFailure(errorCode: Int) {
                         main.post { updateBubbleVisibility() }
-                        Analysis.run(applicationContext, inputs)
+                        deliver(inputs)
                     }
                 })
             }, 150)
         } else {
-            worker.execute { Analysis.run(applicationContext, inputs) }
+            worker.execute { deliver(inputs) }
         }
     }
 

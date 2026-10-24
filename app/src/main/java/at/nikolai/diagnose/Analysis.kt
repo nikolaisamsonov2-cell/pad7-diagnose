@@ -58,6 +58,54 @@ object Analysis {
         return result
     }
 
+    /**
+     * Gesamtbericht einer Prüfung. Alle Belege werden immer nach Drive gesichert (damit nichts verloren geht);
+     * mit API-Schlüssel wertet Claude sie zusätzlich direkt aus.
+     */
+    fun runSession(context: Context, session: ProgramSession): ReportStore.Result {
+        val prefs = Prefs(context)
+        val store = ReportStore(context)
+        val program = session.program
+        val label = "${program?.name ?: "Prüfung"} ${session.id}"
+        val manifest = ClaudeAnalyzer.Input("${session.id}_Uebersicht.txt", session.manifest().toByteArray())
+        val files = session.allFiles().map { ClaudeAnalyzer.Input("${session.id}_${it.name}", it.readBytes()) }
+
+        val backup = runCatching { Handoff.write(context, listOf(manifest) + files) }
+        val backupNote = backup.fold(
+            { "Alle ${it.size} Belege sind im Übergabeordner gesichert und gehen per DriveSync nach Google Drive „Diagnose“." },
+            { "⚠️ Sicherung in den Übergabeordner fehlgeschlagen: ${it.message}" },
+        )
+
+        val result = try {
+            if (prefs.apiKey.isBlank()) {
+                store.save(
+                    label,
+                    "TITEL: ${program?.name ?: "Prüfung"} an Drive übergeben – ${session.vehicle}\n\n" +
+                        "Noch kein API-Schlüssel: Der Gesamtbericht kommt im Claude-Projekt.\n\n$backupNote\n\n${session.manifest()}",
+                    null, session.vehicle,
+                )
+            } else {
+                // Anfragegrenze 32 MB: notfalls Screenshots weglassen, Texte und Dateien bleiben.
+                var budget = 22_000_000L - files.filterNot { isImage(it.fileName) }.sumOf { it.bytes.size.toLong() }
+                val keep = files.filter { f -> !isImage(f.fileName) || (budget - f.bytes.size >= 0).also { if (it) budget -= f.bytes.size } }
+                val dropped = files.size - keep.size
+                val extra = if (dropped > 0) ClaudeAnalyzer.Input("Hinweis.txt",
+                    "$dropped Screenshots wegen Größe weggelassen; Bildschirmtexte sind vollständig.".toByteArray()) else null
+                val text = ClaudeAnalyzer(prefs.apiKey, session.vehicle)
+                    .analyze(listOfNotNull(manifest, extra) + keep, store.history(session.vehicle, 3), program?.reportFocus)
+                store.save(label, "$text\n\n$backupNote", null, session.vehicle)
+            }
+        } catch (e: ClaudeAnalyzer.AnalysisException) {
+            store.save(label, "", "${e.message}\n\n$backupNote", session.vehicle)
+        } catch (e: Exception) {
+            store.save(label, "", "Unerwarteter Fehler: ${e.javaClass.simpleName}: ${e.message}\n\n$backupNote", session.vehicle)
+        }
+        notify(context, result)
+        return result
+    }
+
+    private fun isImage(name: String) = name.substringAfterLast('.').lowercase() in setOf("jpg", "jpeg", "png", "webp")
+
     /** Für den Drive-Weg: eine kleine Textdatei mit dem aktiven Fahrzeug beilegen. */
     private fun withVehicleNote(inputs: List<ClaudeAnalyzer.Input>, vehicle: String): List<ClaudeAnalyzer.Input> {
         val stem = inputs.first().fileName.substringBeforeLast('.')

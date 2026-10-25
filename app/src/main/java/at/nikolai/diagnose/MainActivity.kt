@@ -146,8 +146,10 @@ class MainActivity : Activity() {
         lines += if (prefs.apiKey.isBlank()) "Ohne API-Schlüssel: Berichte gehen über Google Drive an das Claude-Projekt."
         else "Auswertung direkt hier am Tablet."
         setup.removeAllViews()
-        if (!Storage.hasAccess(this)) {
-            setup.addView(Ui.button(this, "⚠️ Schritt 1: Dateizugriff erlauben") { Storage.request(this) })
+        val writeProblem = if (Storage.hasAccess(this)) Storage.writeProblem(java.io.File(prefs.handoffFolder)) else "fehlt"
+        if (writeProblem != null) {
+            setup.addView(Ui.button(this, "⚠️ Schritt 1: Dateizugriff erlauben (Schalter „Zugriff auf alle Dateien“ einschalten)") { Storage.request(this) })
+            if (writeProblem != "fehlt") lines += "⚠️ Speichern im Launch-Ordner klappt nicht: $writeProblem"
         }
         if (!Access.isEnabled(this)) {
             setup.addView(Ui.button(this, "⚠️ Schritt 2: Bedienungshilfe „Diagnose“ einschalten") { explainAccess() })
@@ -160,6 +162,7 @@ class MainActivity : Activity() {
         } else {
             lines += "Automatische Überwachung ist aus."
         }
+        lines += Storage.androidVersion()
         status.text = lines.joinToString("\n")
 
         list.removeAllViews()

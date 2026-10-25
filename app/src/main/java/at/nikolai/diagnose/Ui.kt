@@ -37,7 +37,13 @@ object Ui {
         textSize = 18f
         isAllCaps = false
         minHeight = dp(context, 56)
-        setOnClickListener { onClick() }
+        // Jeder Druck spürbar: kurz vibrieren und kurz abdunkeln.
+        setOnClickListener {
+            performHapticFeedback(android.view.HapticFeedbackConstants.VIRTUAL_KEY, android.view.HapticFeedbackConstants.FLAG_IGNORE_GLOBAL_SETTING)
+            alpha = 0.5f
+            animate().alpha(1f).setDuration(400).start()
+            onClick()
+        }
         layoutParams = LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT).apply { topMargin = dp(context, 6) }
     }
 

@@ -100,7 +100,10 @@ class FaultReader(
             }
             State.BACK -> {
                 // Zurück, bis die Ergebnisliste mit den Steuergeräten wieder da ist.
-                if (modules.any { findExact(root, it.name) != null } && findMatching(root, READ) == null) {
+                // Der Name allein reicht nicht: Er steht oft auch als Überschrift auf dem Code-Bildschirm.
+                val visible = modules.count { findExact(root, it.name) != null }
+                val back = if (modules.size >= 2) visible >= 2 else visible >= 1 && ScreenReader.dtcCodes(text).isEmpty()
+                if (back && findMatching(root, READ) == null) {
                     index++
                     enter(State.OPEN)
                 } else if (waited >= 2500) {

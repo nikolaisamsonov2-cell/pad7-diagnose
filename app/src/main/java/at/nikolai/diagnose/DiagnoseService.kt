@@ -118,8 +118,13 @@ class DiagnoseService : AccessibilityService() {
             return
         }
         if (session == null) {
-            toast(if (auto) "Fehlercodes erkannt, wird ausgewertet …" else "Bildschirm erfasst, wird ausgewertet …")
+            toast(when {
+                prefs.apiKey.isBlank() -> "✓ Gespeichert – geht über Drive an Claude"
+                auto -> "✓ Fehlercodes erkannt – Auswertung kommt als Benachrichtigung"
+                else -> "✓ Erfasst – Auswertung kommt als Benachrichtigung"
+            })
         }
+        if (!auto) flashBubble()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             bubble?.visibility = View.INVISIBLE
             main.postDelayed({
@@ -266,7 +271,7 @@ class DiagnoseService : AccessibilityService() {
                 val text = ScreenReader.format(ScreenReader.collect(rootInActiveWindow))
                 val now = System.currentTimeMillis()
                 if (text != last) { last = text; stableSince = now }
-                val busy = BUSY.containsMatchIn(text)
+                val busy = FaultReader.BUSY.containsMatchIn(text)
                 val secs = (now - started) / 1000
                 panel?.text = "⏳ ${t.name}: Scan läuft seit ${secs / 60}:${"%02d".format(secs % 60)} …" +
                     if (busy) "" else "\nBildschirm ruhig seit ${(now - stableSince) / 1000} s"
@@ -274,6 +279,7 @@ class DiagnoseService : AccessibilityService() {
                     waiting = null
                     hidePanel()
                     captureNow(auto = false)
+                    if (prefs.readCodes) main.postDelayed({ readFaults() }, 3000)
                 } else {
                     main.postDelayed(this, 2000)
                 }
@@ -281,6 +287,24 @@ class DiagnoseService : AccessibilityService() {
         }
         waiting = tick
         main.postDelayed(tick, 4000)
+    }
+
+    private var faultReader: FaultReader? = null
+
+    /** Rote Steuergeräte der Ergebnisliste nacheinander öffnen und ihre Fehlercodes erfassen. */
+    fun readFaults() {
+        if (faultReader != null || player != null) return
+        showPanel("🔎 Suche Steuergeräte mit Fehlern …", "Stopp") { faultReader?.cancel() }
+        faultReader = FaultReader(this, main,
+            capture = { captureNow(auto = false) },
+            onProgress = { msg -> panel?.text = "🔎 $msg" },
+            onDone = { ok, msg ->
+                faultReader = null
+                hidePanel()
+                Analysis.notifyStatus(this, if (ok) "✅ Komplett-Check fertig" else "⚠️ Fehlercodes lesen angehalten", msg)
+                toast(msg)
+            })
+        faultReader?.start()
     }
 
     fun openLaunch() {
@@ -391,11 +415,26 @@ class DiagnoseService : AccessibilityService() {
     }
 
 
+    private var captured = 0
+
+    /** Sichtbare und spürbare Bestätigung: kurz vibrieren, Lupe wird grün mit Zähler. */
+    private fun flashBubble() = main.post {
+        val v = bubble as? TextView ?: return@post
+        captured++
+        v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
+        v.background?.mutate()?.setTint(0xFF2E7D32.toInt())
+        v.text = "✓$captured"
+        v.textSize = 20f
+        main.postDelayed({
+            v.background?.setTintList(null)
+            v.text = "🔍"
+            v.textSize = 28f
+        }, 1800)
+    }
+
     fun toast(msg: String) = main.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
 
     companion object {
-        // Nur eindeutige Warte-Texte; "%" oder "Lade" kämen auch auf der Ergebnisseite vor (Ladezustand).
-        private val BUSY = Regex("bitte warten|please wait|wird gescannt|scanning|wird gelesen|wird geladen|loading", RegexOption.IGNORE_CASE)
         @Volatile
         var instance: DiagnoseService? = null
             private set

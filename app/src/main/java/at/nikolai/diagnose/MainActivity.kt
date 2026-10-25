@@ -103,7 +103,7 @@ class MainActivity : Activity() {
     }
 
     private fun checkTemplate(vehicle: String) =
-        TemplateStore(this).list().filter { it.vehicle == vehicle && it.captureEnd }.maxByOrNull { it.id }
+        TemplateStore(this).list().filter { it.vehicle == vehicle && it.captureEnd && it.format >= Template.FORMAT }.maxByOrNull { it.id }
 
     /** Ein Knopf: Launch öffnen, Fahrzeug wählen, Systemscan, Ergebnis abwarten und erfassen. */
     private fun startCheck() {
@@ -118,22 +118,19 @@ class MainActivity : Activity() {
         val vehicle = Prefs(this).vehicle
         val t = checkTemplate(vehicle)
         if (t != null) {
-            svc.play(t)
+            svc.startCheck(t, vehicle)
             return
         }
         AlertDialog.Builder(this)
-            .setTitle("Einmal vormachen: $vehicle")
+            .setTitle("Komplett-Check: $vehicle")
             .setMessage(
-                "Für dieses Fahrzeug kennt die App den Weg noch nicht. Einmal vormachen, danach reicht dieser Knopf.\n\n" +
-                    "1. Die Launch-App öffnet sich, oben steht „● Aufnahme“.\n" +
-                    "2. Tippe dich wie immer durch bis zum Start des Systemscans (Auto-Suche bzw. Marke, Modell, Getriebe …).\n" +
-                    "3. Sobald der Scan läuft, oben auf „Fertig“ tippen.\n\n" +
-                    "Beim nächsten Mal tippt die App das selbst, wartet bis der Scan fertig ist und erfasst das Ergebnis. " +
+                "Zeigt die Launch-App schon ein Scan-Ergebnis (Topologie mit roten Steuergeräten), liest die App sofort " +
+                    "alle Fehlercodes selbst.\n\n" +
+                    "Sonst einmal vormachen: In der Launch-App wie immer bis zum Systemscan tippen. Sobald das Ergebnis " +
+                    "erscheint, beendet die App die Aufnahme selbst und liest die Fehlercodes. Ab dann reicht dieser Knopf.\n\n" +
                     "Löschen, Codierung und Anpassungen werden nie getippt."
             )
-            .setPositiveButton("Aufnahme starten") { _, _ ->
-                svc.startRecording("Komplett-Check $vehicle", vehicle, scanAfter = false, captureEnd = true)
-            }
+            .setPositiveButton("Los") { _, _ -> svc.startCheck(null, vehicle) }
             .setNegativeButton("Abbrechen", null)
             .show()
     }

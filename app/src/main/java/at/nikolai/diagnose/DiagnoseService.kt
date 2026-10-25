@@ -111,7 +111,10 @@ class DiagnoseService : AccessibilityService() {
                 toast("Beleg gespeichert: $itemTitle (${session.files(itemId).count { it.name.endsWith(".txt") }})")
             }
         } else {
-            { list -> Analysis.run(applicationContext, list) }
+            { list ->
+                val r = Analysis.run(applicationContext, list)
+                if (r.error != null) toast("⚠️ Nicht gespeichert: ${r.error}")
+            }
         }
         if (session != null && itemId == null) {
             toast("Prüfung läuft: bitte in der Diagnose-App zuerst einen Prüfpunkt antippen")

@@ -64,6 +64,7 @@ class DiagnoseService : AccessibilityService() {
     override fun onDestroy() {
         instance = null
         player?.cancel()
+        live?.cancel()
         removeView(bubble)
         removeView(popupView)
         removeView(panelWrap)
@@ -156,18 +157,18 @@ class DiagnoseService : AccessibilityService() {
     }
 
     @RequiresApi(Build.VERSION_CODES.R)
-    private fun toJpeg(result: AccessibilityService.ScreenshotResult): ByteArray {
+    private fun toJpeg(result: AccessibilityService.ScreenshotResult, maxSide: Int = 2000, quality: Int = 85): ByteArray {
         val hw = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace)
             ?: error("Screenshot leer")
         val bmp = hw.copy(Bitmap.Config.ARGB_8888, false)
         result.hardwareBuffer.close()
-        val scale = minOf(1f, 2000f / maxOf(bmp.width, bmp.height))
+        val scale = minOf(1f, maxSide.toFloat() / maxOf(bmp.width, bmp.height))
         val out = if (scale < 1f) Bitmap.createScaledBitmap(bmp, (bmp.width * scale).toInt(), (bmp.height * scale).toInt(), true) else bmp
-        return ByteArrayOutputStream().also { out.compress(Bitmap.CompressFormat.JPEG, 85, it) }.toByteArray()
+        return ByteArrayOutputStream().also { out.compress(Bitmap.CompressFormat.JPEG, quality, it) }.toByteArray()
     }
 
     private val autoCheck = Runnable {
-        if (!prefs.autoCapture || recording != null || player != null || faultReader != null) return@Runnable
+        if (!prefs.autoCapture || recording != null || busyAuto) return@Runnable
         if (!isLaunch(foreground)) return@Runnable
         val text = ScreenReader.format(ScreenReader.collect(rootInActiveWindow))
         val codes = ScreenReader.dtcCodes(text)
@@ -298,6 +299,85 @@ class DiagnoseService : AccessibilityService() {
     }
 
     private var faultReader: FaultReader? = null
+    private var live: LiveAgent? = null
+
+    /** Läuft gerade ein automatischer Ablauf, der selbst tippt? Dann keine Fenster in die Mitte legen. */
+    private val busyAuto get() = faultReader != null || player != null || live != null
+
+    // ---------- Live-Modus: Claude steuert ----------
+
+    fun startLive(goal: String) {
+        if (busyAuto || recording != null) {
+            toast("Es läuft schon ein Ablauf")
+            return
+        }
+        val agent = LiveAgent(this, prefs.apiKey, prefs.vehicle, goal,
+            onStatus = { msg -> main.post { panel?.text = msg } },
+            onDone = { ok, msg ->
+                main.post {
+                    live = null
+                    hidePanel()
+                    Analysis.notifyStatus(this, if (ok) "✅ Claude ist fertig" else "⚠️ Claude hat angehalten", msg)
+                    popup(msg, error = !ok)
+                }
+            })
+        live = agent
+        removeView(popupView)
+        popupView = null
+        showPanel("🤖 Claude übernimmt …", "Stopp") { live?.cancel(); panel?.text = "🤖 Wird gestoppt …" }
+        openLaunch()
+        main.postDelayed({ agent.start() }, 2500)
+    }
+
+    fun launchInFront() = isLaunch(rootInActiveWindow?.packageName?.toString().orEmpty())
+
+    fun openLaunchNow() = main.post { openLaunch() }
+
+    fun displaySize(): Pair<Int, Int> {
+        val m = android.util.DisplayMetrics()
+        @Suppress("DEPRECATION")
+        wm?.defaultDisplay?.getRealMetrics(m)
+        return maxOf(1, m.widthPixels) to maxOf(1, m.heightPixels)
+    }
+
+    fun vibrateShort() = main.post { vibrate(60) }
+
+    /** Eigene Einblendungen kurz ausblenden, damit ein Fingertipp die Launch-App trifft und nicht die Statusleiste. */
+    fun withOverlaysHidden(action: () -> Unit) {
+        val latch = java.util.concurrent.CountDownLatch(1)
+        main.post { panelWrap?.visibility = View.INVISIBLE; latch.countDown() }
+        latch.await(1, java.util.concurrent.TimeUnit.SECONDS)
+        Thread.sleep(120)
+        main.post(action)
+        Thread.sleep(500)
+        main.post { panelWrap?.visibility = View.VISIBLE }
+    }
+
+    /** Screenshot ohne eigene Einblendungen, verkleinert; blockiert bis zu 5 s. Nicht vom Hauptthread aufrufen. */
+    fun screenshotJpeg(maxSide: Int): ByteArray? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return null
+        val latch = java.util.concurrent.CountDownLatch(1)
+        var out: ByteArray? = null
+        main.post {
+            panelWrap?.visibility = View.INVISIBLE
+            main.postDelayed({
+                takeScreenshot(Display.DEFAULT_DISPLAY, worker, object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                        out = runCatching { toJpeg(result, maxSide, 80) }.getOrNull()
+                        main.post { panelWrap?.visibility = View.VISIBLE }
+                        latch.countDown()
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        main.post { panelWrap?.visibility = View.VISIBLE }
+                        latch.countDown()
+                    }
+                })
+            }, 150)
+        }
+        latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+        return out
+    }
 
     fun screenText() = ScreenReader.format(ScreenReader.collect(rootInActiveWindow))
 
@@ -338,7 +418,7 @@ class DiagnoseService : AccessibilityService() {
 
     /** Rote Steuergeräte der Ergebnisliste nacheinander öffnen und ihre Fehlercodes erfassen. */
     fun readFaults() {
-        if (faultReader != null || player != null) return
+        if (busyAuto) return
         removeView(popupView)
         popupView = null
         showPanel("🔎 Suche Steuergeräte mit Fehlern …", "Stopp") { faultReader?.cancel() }
@@ -468,7 +548,7 @@ class DiagnoseService : AccessibilityService() {
     }
 
     private fun updateBubbleVisibility() {
-        val show = isLaunch(foreground) && recording == null && player == null
+        val show = isLaunch(foreground) && recording == null && player == null && live == null
         bubble?.visibility = if (show) View.VISIBLE else View.GONE
     }
 
@@ -551,7 +631,7 @@ class DiagnoseService : AccessibilityService() {
         }, if (ok) 2500 else 6000)
         // Während automatischer Abläufe kein Fenster in die Mitte legen (es würde Tipps abfangen): Text in die Statusleiste,
         // Fehler werden gesammelt und am Ende angezeigt.
-        if (faultReader != null || player != null) {
+        if (busyAuto) {
             panel?.text = msg.lineSequence().first()
             if (!ok) errors += msg.replace("\n\n", ": ")
         } else {
@@ -561,7 +641,7 @@ class DiagnoseService : AccessibilityService() {
 
     /** Fenster mitten am Bildschirm mit OK-Knopf. Fehler bleiben stehen, bis OK gedrückt wird; Erfolg schließt nach 8 s. */
     fun popup(msg: String, error: Boolean) = main.post {
-        if (faultReader != null || player != null) {
+        if (busyAuto) {
             panel?.text = msg.lineSequence().first()
             return@post
         }

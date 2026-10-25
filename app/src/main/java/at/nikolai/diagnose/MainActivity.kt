@@ -41,6 +41,7 @@ class MainActivity : Activity() {
         root.addView(setup)
         startButton = Ui.button(this, "") { startCheck() }.apply { textSize = 22f }
         root.addView(startButton)
+        root.addView(Ui.button(this, "🤖 Claude steuert (Live-Modus)") { startLive() })
         programButton = Ui.button(this, "") { startActivity(Intent(this, ProgramActivity::class.java)) }
         root.addView(programButton)
         root.addView(Ui.button(this, "▶ Komplett-Check & Messfahrt") { startActivity(Intent(this, TemplatesActivity::class.java)) })
@@ -104,6 +105,72 @@ class MainActivity : Activity() {
 
     private fun checkTemplate(vehicle: String) =
         TemplateStore(this).list().filter { it.vehicle == vehicle && it.captureEnd && it.format >= Template.FORMAT }.maxByOrNull { it.id }
+
+    /** Live-Modus: Claude sieht den Bildschirm und tippt selbst. Braucht einen eigenen API-Schlüssel. */
+    private fun startLive() {
+        val svc = DiagnoseService.instance
+        if (svc == null) {
+            AlertDialog.Builder(this)
+                .setMessage("Dafür muss die Bedienungshilfe „Diagnose“ eingeschaltet sein. Jetzt öffnen?")
+                .setPositiveButton("Öffnen") { _, _ -> Access.openSettings(this) }
+                .setNegativeButton("Später", null).show()
+            return
+        }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            AlertDialog.Builder(this)
+                .setMessage("Der Live-Modus braucht Android 11 oder neuer (Screenshots). Dieses Gerät: ${Storage.androidVersion()}.")
+                .setPositiveButton("OK", null).show()
+            return
+        }
+        val prefs = Prefs(this)
+        if (prefs.apiKey.isBlank()) {
+            AlertDialog.Builder(this)
+                .setTitle("API-Schlüssel fehlt")
+                .setMessage(
+                    "Im Live-Modus schaut Claude über das Internet auf den Bildschirm und tippt selbst. Dafür braucht die App " +
+                        "deinen eigenen Schlüssel:\n\n" +
+                        "1. Im Browser console.anthropic.com öffnen und anmelden.\n" +
+                        "2. Unter „Billing“ Guthaben aufladen (z. B. 10 \$).\n" +
+                        "3. Unter „API Keys“ → „Create Key“, Schlüssel kopieren.\n" +
+                        "4. Hier unter Einstellungen einfügen und speichern.\n\n" +
+                        "Den Schlüssel nie im Chat schicken."
+                )
+                .setPositiveButton("Einstellungen") { _, _ -> startActivity(Intent(this, SettingsActivity::class.java)) }
+                .setNegativeButton("Später", null).show()
+            return
+        }
+        val names = LiveAgent.PRESETS.map { it.first } + "Eigene Aufgabe …"
+        AlertDialog.Builder(this)
+            .setTitle("Was soll Claude machen? (${prefs.vehicle})")
+            .setItems(names.toTypedArray()) { _, i ->
+                if (i < LiveAgent.PRESETS.size) confirmLive(svc, LiveAgent.PRESETS[i].first, LiveAgent.PRESETS[i].second)
+                else {
+                    val input = android.widget.EditText(this).apply { hint = "z. B. Im PCM die Versionsinformationen erfassen" }
+                    AlertDialog.Builder(this)
+                        .setTitle("Eigene Aufgabe")
+                        .setView(input)
+                        .setPositiveButton("Weiter") { _, _ ->
+                            val goal = input.text.toString().trim()
+                            if (goal.isNotEmpty()) confirmLive(svc, "Eigene Aufgabe", goal)
+                        }
+                        .setNegativeButton("Abbrechen", null).show()
+                }
+            }
+            .setNegativeButton("Abbrechen", null).show()
+    }
+
+    private fun confirmLive(svc: DiagnoseService, name: String, goal: String) {
+        AlertDialog.Builder(this)
+            .setTitle("🤖 $name")
+            .setMessage(
+                "Claude öffnet Launch und tippt selbst. Oben steht, was gerade passiert; mit „Stopp“ hörst du jederzeit auf.\n\n" +
+                    "Löschen, Codierung, Anpassungen und Stellgliedtests sind gesperrt und werden nie getippt.\n\n" +
+                    "Kosten: etwa 3–4 Cent pro Schritt, höchstens ${LiveAgent.MAX_STEPS} Schritte (also höchstens etwa 2 €). " +
+                    "Fahrzeug: Zündung an, Stecker drin."
+            )
+            .setPositiveButton("Los") { _, _ -> svc.startLive(goal) }
+            .setNegativeButton("Abbrechen", null).show()
+    }
 
     /** Ein Knopf: Launch öffnen, Fahrzeug wählen, Systemscan, Ergebnis abwarten und erfassen. */
     private fun startCheck() {

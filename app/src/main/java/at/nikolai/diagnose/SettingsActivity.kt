@@ -87,6 +87,8 @@ class SettingsActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        access.text = if (Storage.hasAccess(this)) "✅ Dateizugriff erlaubt" else "⚠️ Dateizugriff fehlt"
+        val problem = if (Storage.hasAccess(this)) Storage.writeProblem(java.io.File(Prefs(this).handoffFolder)) else "fehlt"
+        access.text = (if (problem == null) "✅ Dateizugriff erlaubt (Schreibprobe ok)" else "⚠️ Dateizugriff: $problem") +
+            "\n" + Storage.androidVersion()
     }
 }

@@ -18,8 +18,25 @@ object Storage {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             Environment.isExternalStorageManager()
         } else {
-            context.checkSelfPermission(Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+            PERMISSIONS.all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }
         }
+
+    private val PERMISSIONS = arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE, Manifest.permission.WRITE_EXTERNAL_STORAGE)
+
+    /** Echte Schreibprobe: Erlaubnis allein heißt nicht, dass das Gerät das Schreiben zulässt. Liefert die Fehlermeldung oder null. */
+    fun writeProblem(dir: java.io.File): String? = runCatching {
+        if (!dir.isDirectory && !dir.mkdirs()) return "Ordner ${dir.absolutePath} lässt sich nicht anlegen"
+        val probe = java.io.File(dir, ".diagnose_probe")
+        probe.writeText("ok")
+        probe.delete()
+        null
+    }.getOrElse { it.message ?: it.javaClass.simpleName }
+
+    /** Ersatzordner, in den die App immer schreiben darf. */
+    fun fallbackDir(context: Context): java.io.File =
+        context.getExternalFilesDir("Uebergabe") ?: java.io.File(context.filesDir, "Uebergabe")
+
+    fun androidVersion(): String = "Android ${Build.VERSION.RELEASE} (API ${Build.VERSION.SDK_INT})"
 
     /** Ab Android 11 öffnet das die Systemseite "Zugriff auf alle Dateien". */
     fun request(activity: Activity) {
@@ -31,7 +48,7 @@ object Storage {
             runCatching { activity.startActivity(intent) }
                 .onFailure { activity.startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
         } else {
-            activity.requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE), REQUEST_CODE)
+            activity.requestPermissions(PERMISSIONS, REQUEST_CODE)
         }
     }
 }

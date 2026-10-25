@@ -65,6 +65,7 @@ class DiagnoseService : AccessibilityService() {
         instance = null
         player?.cancel()
         removeView(bubble)
+        removeView(popupView)
         removeView(panelWrap)
         super.onDestroy()
     }
@@ -114,26 +115,24 @@ class DiagnoseService : AccessibilityService() {
         val deliver: (List<ClaudeAnalyzer.Input>) -> Unit = if (session != null && itemId != null) {
             { list ->
                 list.forEach { session.addFile(itemId, it.fileName, it.bytes) }
-                toast("Beleg gespeichert: $itemTitle (${session.files(itemId).count { it.name.endsWith(".txt") }})")
+                report(true, "✓ Beleg gespeichert: $itemTitle (${session.files(itemId).count { it.name.endsWith(".txt") }})")
             }
         } else {
             { list ->
                 val r = Analysis.run(applicationContext, list)
-                if (r.error != null) toast("⚠️ Nicht gespeichert: ${r.error}")
+                if (r.error != null) report(false, "⚠️ Nicht gespeichert\n\n${r.error}")
+                else report(true, when {
+                    prefs.apiKey.isBlank() -> "✓ Gespeichert – geht über Drive an Claude\n\n" +
+                        r.text.lines().filter { it.startsWith("/") }.joinToString("\n") { it.substringAfterLast('/') }
+                    else -> "✓ Ausgewertet: ${r.text.lineSequence().firstOrNull()?.removePrefix("TITEL:")?.trim() ?: ""}"
+                })
             }
         }
         if (session != null && itemId == null) {
-            toast("Prüfung läuft: bitte in der Diagnose-App zuerst einen Prüfpunkt antippen")
+            report(false, "Prüfung läuft: bitte in der Diagnose-App zuerst einen Prüfpunkt antippen")
             return
         }
-        if (session == null) {
-            toast(when {
-                prefs.apiKey.isBlank() -> "✓ Gespeichert – geht über Drive an Claude"
-                auto -> "✓ Fehlercodes erkannt – Auswertung kommt als Benachrichtigung"
-                else -> "✓ Erfasst – Auswertung kommt als Benachrichtigung"
-            })
-        }
-        if (!auto) flashBubble()
+        if (!auto) pressBubble()
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             bubble?.visibility = View.INVISIBLE
             main.postDelayed({
@@ -340,6 +339,8 @@ class DiagnoseService : AccessibilityService() {
     /** Rote Steuergeräte der Ergebnisliste nacheinander öffnen und ihre Fehlercodes erfassen. */
     fun readFaults() {
         if (faultReader != null || player != null) return
+        removeView(popupView)
+        popupView = null
         showPanel("🔎 Suche Steuergeräte mit Fehlern …", "Stopp") { faultReader?.cancel() }
         val reader = FaultReader(this, main,
             capture = { captureNow(auto = false) },
@@ -348,7 +349,9 @@ class DiagnoseService : AccessibilityService() {
                 faultReader = null
                 hidePanel()
                 Analysis.notifyStatus(this, if (ok) "✅ Komplett-Check fertig" else "⚠️ Fehlercodes lesen angehalten", msg)
-                toast(msg)
+                val all = if (errors.isEmpty()) msg else msg + "\n\nProbleme:\n" + errors.joinToString("\n")
+                errors.clear()
+                popup(all, error = !ok || all != msg)
             })
         faultReader = reader
         val byText = FaultReader.detect(screenText())
@@ -442,6 +445,7 @@ class DiagnoseService : AccessibilityService() {
         v.setOnTouchListener { view, e ->
             when (e.action) {
                 MotionEvent.ACTION_DOWN -> {
+                    view.animate().scaleX(1.3f).scaleY(1.3f).setDuration(80).start()
                     downX = e.rawX; downY = e.rawY; startX = lp.x; startY = lp.y; moved = false
                 }
                 MotionEvent.ACTION_MOVE -> {
@@ -453,7 +457,10 @@ class DiagnoseService : AccessibilityService() {
                         wm?.updateViewLayout(view, lp)
                     }
                 }
-                MotionEvent.ACTION_UP -> if (!moved) captureNow(auto = false)
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    view.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
+                    if (!moved && e.action == MotionEvent.ACTION_UP) captureNow(auto = false)
+                }
             }
             true
         }
@@ -508,20 +515,85 @@ class DiagnoseService : AccessibilityService() {
 
 
     private var captured = 0
+    private var popupView: View? = null
+    private val errors = mutableListOf<String>()
 
-    /** Sichtbare und spürbare Bestätigung: kurz vibrieren, Lupe wird grün mit Zähler. */
-    private fun flashBubble() = main.post {
+    private fun vibrate(ms: Long) = runCatching {
+        val v = getSystemService(android.os.Vibrator::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            v?.vibrate(android.os.VibrationEffect.createOneShot(ms, android.os.VibrationEffect.DEFAULT_AMPLITUDE))
+        } else {
+            @Suppress("DEPRECATION") v?.vibrate(ms)
+        }
+    }
+
+    /** Sofort beim Antippen: vibrieren, Lupe wird orange mit Sanduhr, bis das Ergebnis da ist. */
+    private fun pressBubble() = main.post {
         val v = bubble as? TextView ?: return@post
-        captured++
+        vibrate(60)
         v.performHapticFeedback(android.view.HapticFeedbackConstants.LONG_PRESS)
-        v.background?.mutate()?.setTint(0xFF2E7D32.toInt())
-        v.text = "✓$captured"
-        v.textSize = 20f
+        v.background?.mutate()?.setTint(0xFFEF6C00.toInt())
+        v.text = "⏳"
+    }
+
+    /** Ergebnis sichtbar machen: Lupe grün (✓N) oder rot (✗), dazu ein Fenster mit dem ganzen Text. */
+    private fun report(ok: Boolean, msg: String) = main.post {
+        val v = bubble as? TextView
+        if (ok) captured++
+        vibrate(if (ok) 80 else 400)
+        v?.background?.mutate()?.setTint(if (ok) 0xFF2E7D32.toInt() else 0xFFC62828.toInt())
+        v?.text = if (ok) "✓$captured" else "✗"
+        v?.textSize = 20f
         main.postDelayed({
-            v.background?.setTintList(null)
-            v.text = "🔍"
-            v.textSize = 28f
-        }, 1800)
+            v?.background?.setTintList(null)
+            v?.text = "🔍"
+            v?.textSize = 28f
+        }, if (ok) 2500 else 6000)
+        // Während automatischer Abläufe kein Fenster in die Mitte legen (es würde Tipps abfangen): Text in die Statusleiste,
+        // Fehler werden gesammelt und am Ende angezeigt.
+        if (faultReader != null || player != null) {
+            panel?.text = msg.lineSequence().first()
+            if (!ok) errors += msg.replace("\n\n", ": ")
+        } else {
+            popup(msg, error = !ok)
+        }
+    }
+
+    /** Fenster mitten am Bildschirm mit OK-Knopf. Fehler bleiben stehen, bis OK gedrückt wird; Erfolg schließt nach 8 s. */
+    fun popup(msg: String, error: Boolean) = main.post {
+        if (faultReader != null || player != null) {
+            panel?.text = msg.lineSequence().first()
+            return@post
+        }
+        removeView(popupView)
+        val p = Ui.dp(this, 16)
+        val text = TextView(this).apply {
+            this.text = msg
+            textSize = 18f
+            setTextColor(0xFFFFFFFF.toInt())
+            setTextIsSelectable(false)
+        }
+        val ok = TextView(this).apply {
+            this.text = "OK"
+            textSize = 20f
+            gravity = Gravity.CENTER
+            setTextColor(0xFFFFFFFF.toInt())
+            setBackgroundColor(if (error) 0xFFC62828.toInt() else 0xFF2E7D32.toInt())
+            setPadding(p, p / 2, p, p / 2)
+        }
+        val card = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(if (error) 0xF2B71C1C.toInt() else 0xF21B5E20.toInt())
+            setPadding(p, p, p, p)
+            addView(text)
+            addView(ok, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT)
+                .apply { topMargin = p })
+        }
+        val width = (resources.displayMetrics.widthPixels * 0.8).toInt()
+        val lp = overlayParams(width, WindowManager.LayoutParams.WRAP_CONTENT).apply { gravity = Gravity.CENTER }
+        ok.setOnClickListener { vibrate(30); removeView(card); if (popupView === card) popupView = null }
+        runCatching { wm?.addView(card, lp) }.onSuccess { popupView = card }
+        if (!error) main.postDelayed({ if (popupView === card) { removeView(card); popupView = null } }, 8000)
     }
 
     fun toast(msg: String) = main.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }

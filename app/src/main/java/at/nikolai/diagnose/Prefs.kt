@@ -37,6 +37,11 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("auto_capture", true)
         set(value) = sp.edit().putBoolean("auto_capture", value).apply()
 
+    /** Nach dem Systemscan die Steuergeräte mit Fehlern selbst öffnen und Codes lesen. */
+    var readCodes: Boolean
+        get() = sp.getBoolean("read_codes", true)
+        set(value) = sp.edit().putBoolean("read_codes", value).apply()
+
     /** Paketname der Launch-App, wird beim ersten Öffnen erkannt. */
     var launchPackage: String
         get() = sp.getString("launch_package", "") ?: ""

@@ -18,6 +18,8 @@ data class Template(
     val scanAfter: Boolean,
     /** Am Ende den Bildschirm erfassen und auswerten (Komplett-Check: Ergebnisseite des Systemscans). */
     val captureEnd: Boolean = false,
+    /** 2 = aufgenommen mit automatischem Ende am Scan-Ergebnis; ältere Komplett-Check-Vorlagen werden ignoriert. */
+    val format: Int = FORMAT,
 ) {
     data class Step(
         val label: String,
@@ -27,7 +29,7 @@ data class Template(
     )
 
     fun toJson(): JSONObject = JSONObject()
-        .put("id", id).put("name", name).put("vehicle", vehicle).put("scanAfter", scanAfter).put("captureEnd", captureEnd)
+        .put("id", id).put("name", name).put("vehicle", vehicle).put("scanAfter", scanAfter).put("captureEnd", captureEnd).put("format", format)
         .put("steps", JSONArray().apply {
             steps.forEach { s ->
                 put(JSONObject().put("label", s.label)
@@ -37,6 +39,8 @@ data class Template(
         })
 
     companion object {
+        const val FORMAT = 2
+
         fun fromJson(o: JSONObject): Template {
             val arr = o.getJSONArray("steps")
             val steps = (0 until arr.length()).map { i ->
@@ -47,7 +51,7 @@ data class Template(
                     if (s.isNull("viewId")) null else s.getString("viewId"),
                 )
             }
-            return Template(o.getString("id"), o.getString("name"), o.optString("vehicle"), steps, o.optBoolean("scanAfter"), o.optBoolean("captureEnd"))
+            return Template(o.getString("id"), o.getString("name"), o.optString("vehicle"), steps, o.optBoolean("scanAfter"), o.optBoolean("captureEnd"), o.optInt("format", 1))
         }
     }
 }

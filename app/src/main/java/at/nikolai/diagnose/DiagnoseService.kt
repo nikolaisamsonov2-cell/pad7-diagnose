@@ -83,7 +83,13 @@ class DiagnoseService : AccessibilityService() {
                 }
                 if (isLaunch(pkg)) scheduleAutoCheck()
             }
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> if (isLaunch(pkg)) scheduleAutoCheck()
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> if (isLaunch(pkg)) {
+                scheduleAutoCheck()
+                if (recording?.captureEnd == true) {
+                    main.removeCallbacks(recordingEndCheck)
+                    main.postDelayed(recordingEndCheck, 1500)
+                }
+            }
             AccessibilityEvent.TYPE_VIEW_CLICKED -> if (isLaunch(pkg)) recordClick(event)
         }
         player?.onEvent()
@@ -162,7 +168,7 @@ class DiagnoseService : AccessibilityService() {
     }
 
     private val autoCheck = Runnable {
-        if (!prefs.autoCapture || recording != null || player != null) return@Runnable
+        if (!prefs.autoCapture || recording != null || player != null || faultReader != null) return@Runnable
         if (!isLaunch(foreground)) return@Runnable
         val text = ScreenReader.format(ScreenReader.collect(rootInActiveWindow))
         val codes = ScreenReader.dtcCodes(text)
@@ -224,7 +230,7 @@ class DiagnoseService : AccessibilityService() {
             toast("Keine Schritte aufgenommen")
             return
         }
-        val t = Template(System.currentTimeMillis().toString(), rec.name, rec.vehicle, rec.steps, rec.scanAfter, rec.captureEnd)
+        val t = Template(System.currentTimeMillis().toString(), rec.name, rec.vehicle, rec.steps, rec.scanAfter, rec.captureEnd, Template.FORMAT)
         TemplateStore(this).save(t)
         // Schon beim Vormachen das Ergebnis mitnehmen.
         if (t.captureEnd) waitForResult(t)
@@ -294,11 +300,48 @@ class DiagnoseService : AccessibilityService() {
 
     private var faultReader: FaultReader? = null
 
+    fun screenText() = ScreenReader.format(ScreenReader.collect(rootInActiveWindow))
+
+    /** Scan-Ergebnis der Launch-App (Topologie oder Systemliste mit Bericht-Knopf)? */
+    fun isResultScreen(text: String) = RESULT.containsMatchIn(text) && REPORT_BUTTON.containsMatchIn(text)
+
+    /**
+     * Ein Knopf: Steht Launch schon auf einem Scan-Ergebnis, sofort die Fehlercodes lesen.
+     * Sonst die Vorlage abspielen bzw. einmal vormachen lassen.
+     */
+    fun startCheck(t: Template?, vehicle: String) {
+        if (player != null || faultReader != null || recording != null) {
+            toast("Es läuft schon ein Ablauf")
+            return
+        }
+        openLaunch()
+        main.postDelayed({
+            val onLaunch = isLaunch(rootInActiveWindow?.packageName?.toString().orEmpty())
+            when {
+                onLaunch && isResultScreen(screenText()) -> {
+                    captureNow(auto = false)
+                    main.postDelayed({ readFaults() }, 3000)
+                }
+                t != null -> play(t)
+                else -> startRecording("Komplett-Check $vehicle", vehicle, scanAfter = false, captureEnd = true)
+            }
+        }, 3000)
+    }
+
+    /** Beim Vormachen: Aufnahme endet von selbst, sobald das Scan-Ergebnis da ist. */
+    private val recordingEndCheck = Runnable {
+        val rec = recording ?: return@Runnable
+        if (rec.captureEnd && rec.steps.isNotEmpty() && isResultScreen(screenText())) {
+            toast("Scan-Ergebnis erkannt – ab hier mache ich weiter")
+            stopRecording()
+        }
+    }
+
     /** Rote Steuergeräte der Ergebnisliste nacheinander öffnen und ihre Fehlercodes erfassen. */
     fun readFaults() {
         if (faultReader != null || player != null) return
         showPanel("🔎 Suche Steuergeräte mit Fehlern …", "Stopp") { faultReader?.cancel() }
-        faultReader = FaultReader(this, main,
+        val reader = FaultReader(this, main,
             capture = { captureNow(auto = false) },
             onProgress = { msg -> panel?.text = "🔎 $msg" },
             onDone = { ok, msg ->
@@ -307,7 +350,53 @@ class DiagnoseService : AccessibilityService() {
                 Analysis.notifyStatus(this, if (ok) "✅ Komplett-Check fertig" else "⚠️ Fehlercodes lesen angehalten", msg)
                 toast(msg)
             })
-        faultReader?.start()
+        faultReader = reader
+        val byText = FaultReader.detect(screenText())
+        if (byText.isNotEmpty() || Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            reader.start(byText)
+            return
+        }
+        // Topologie: Zahlen-Kreise sind oft nur gezeichnet. Dann rote Kästchen am Screenshot erkennen.
+        panelWrap?.visibility = View.INVISIBLE
+        bubble?.visibility = View.INVISIBLE
+        main.postDelayed({
+            takeScreenshot(Display.DEFAULT_DISPLAY, worker, object : AccessibilityService.TakeScreenshotCallback {
+                override fun onSuccess(result: AccessibilityService.ScreenshotResult) {
+                    val found = runCatching { redModules(result) }.getOrDefault(emptyList())
+                    main.post { panelWrap?.visibility = View.VISIBLE; updateBubbleVisibility(); reader.start(found) }
+                }
+
+                override fun onFailure(errorCode: Int) {
+                    main.post { panelWrap?.visibility = View.VISIBLE; updateBubbleVisibility(); reader.start(emptyList()) }
+                }
+            })
+        }, 200)
+    }
+
+    /** Steuergeräte-Kästchen, deren Hintergrund rot ist (Topologie: rot = Anomal). */
+    @RequiresApi(Build.VERSION_CODES.R)
+    private fun redModules(result: AccessibilityService.ScreenshotResult): List<FaultReader.Module> {
+        val hw = Bitmap.wrapHardwareBuffer(result.hardwareBuffer, result.colorSpace) ?: return emptyList()
+        val bmp = hw.copy(Bitmap.Config.ARGB_8888, false)
+        result.hardwareBuffer.close()
+        val out = LinkedHashMap<String, FaultReader.Module>()
+        for (item in ScreenReader.collect(rootInActiveWindow)) {
+            val name = item.text
+            if (!MODULE_NAME.matches(name) || name == "OBD" || name.startsWith("HS_")) continue
+            val r = item.bounds
+            var red = 0
+            var total = 0
+            for (fx in listOf(0.06f, 0.15f, 0.85f, 0.94f)) for (fy in listOf(0.25f, 0.75f)) {
+                val x = (r.left + r.width() * fx).toInt()
+                val y = (r.top + r.height() * fy).toInt()
+                if (x !in 0 until bmp.width || y !in 0 until bmp.height) continue
+                val c = bmp.getPixel(x, y)
+                total++
+                if (android.graphics.Color.red(c) > 150 && android.graphics.Color.green(c) < 110 && android.graphics.Color.blue(c) < 110) red++
+            }
+            if (total > 0 && red * 2 >= total) out[name] = FaultReader.Module(name, 1)
+        }
+        return out.values.toList()
     }
 
     fun openLaunch() {
@@ -438,6 +527,10 @@ class DiagnoseService : AccessibilityService() {
     fun toast(msg: String) = main.post { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
 
     companion object {
+        private val RESULT = Regex("system ?topolog|systemtopologie|systemliste|system list", RegexOption.IGNORE_CASE)
+        private val REPORT_BUTTON = Regex("\\bbericht\\b|\\breport\\b", RegexOption.IGNORE_CASE)
+        private val MODULE_NAME = Regex("^[A-Z][A-Z0-9]{1,9}$")
+
         @Volatile
         var instance: DiagnoseService? = null
             private set

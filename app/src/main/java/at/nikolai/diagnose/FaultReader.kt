@@ -34,8 +34,8 @@ class FaultReader(
     private val done = mutableListOf<String>()
     private val tick = Runnable { step() }
 
-    fun start() {
-        modules = detect(screenText())
+    fun start(found: List<Module>) {
+        modules = found
         if (modules.isEmpty()) {
             finish(false, "Keine Steuergeräte mit Fehlern erkannt. Falls doch welche rot sind: in der Launch-App auf " +
                 "Listenansicht umschalten oder die Codes mit 🔍 erfassen.")
@@ -102,7 +102,8 @@ class FaultReader(
                 // Zurück, bis die Ergebnisliste mit den Steuergeräten wieder da ist.
                 // Der Name allein reicht nicht: Er steht oft auch als Überschrift auf dem Code-Bildschirm.
                 val visible = modules.count { findExact(root, it.name) != null }
-                val back = if (modules.size >= 2) visible >= 2 else visible >= 1 && ScreenReader.dtcCodes(text).isEmpty()
+                // Codes sichtbar = Seitenfenster/Code-Bildschirm noch offen.
+                val back = (if (modules.size >= 2) visible >= 2 else visible >= 1) && ScreenReader.dtcCodes(text).isEmpty()
                 if (back && findMatching(root, READ) == null) {
                     index++
                     enter(State.OPEN)
@@ -171,18 +172,27 @@ class FaultReader(
         return hit
     }
 
+    /**
+     * Antippen: das Element selbst oder ein naher, kaum größerer klickbarer Rahmen; sonst ein echter Fingertipp
+     * auf die Mitte (Topologie-Kästchen sind oft nicht einzeln klickbar).
+     */
     private fun click(n: AccessibilityNodeInfo) {
+        val own = Rect().also { n.getBoundsInScreen(it) }
         var cur: AccessibilityNodeInfo? = n
         var depth = 0
-        while (cur != null && !cur.isClickable && depth < 8) { cur = cur.parent; depth++ }
-        val target = cur ?: n
-        if (!target.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
-            val r = Rect()
-            target.getBoundsInScreen(r)
-            val path = Path().apply { moveTo(r.exactCenterX(), r.exactCenterY()) }
-            service.dispatchGesture(
-                GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 60)).build(), null, null)
+        while (cur != null && depth <= 2) {
+            if (cur.isClickable) {
+                val b = Rect().also { cur!!.getBoundsInScreen(it) }
+                val small = b.width().toLong() * b.height() <= 4L * maxOf(1, own.width()) * maxOf(1, own.height())
+                if (small && cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) return
+                break
+            }
+            cur = cur.parent
+            depth++
         }
+        val path = Path().apply { moveTo(own.exactCenterX(), own.exactCenterY()) }
+        service.dispatchGesture(
+            GestureDescription.Builder().addStroke(GestureDescription.StrokeDescription(path, 0, 60)).build(), null, null)
     }
 
     private fun walk(n: AccessibilityNodeInfo?, depth: Int = 0, f: (AccessibilityNodeInfo) -> Unit) {
